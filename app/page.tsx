@@ -12,6 +12,7 @@ import { useWatchHistory } from "@/lib/use-watch-history";
 import { useAutoHighlights } from "@/lib/auto-highlights";
 import { isLikedId, usePlaylists, type PlayMode, type Playlist } from "@/lib/playlist";
 import type { VideoItem } from "@/lib/youtube";
+import AccountBar from "@/components/account-bar";
 
 const MODE_KEY = "muverse:playmode";
 const MODE_LABEL: Record<PlayMode, string> = { sequential: "วนซ้ำแบบเรียง", shuffle: "วนซ้ำแบบสุ่ม", single: "วนซ้ำคลิปเดียว" };
@@ -220,6 +221,7 @@ export default function Page() {
           Muverse
         </Link>
       </h1>
+      <AccountBar />
 
       {current && (
         <section>
