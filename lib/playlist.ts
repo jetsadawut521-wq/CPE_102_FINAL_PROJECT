@@ -1,10 +1,3 @@
-<<<<<<< HEAD
-// lib/playlist.ts
-// จัดการ playlist ของผู้ใช้ เก็บใน localStorage ของเบราว์เซอร์ (ยังไม่มีระบบบัญชี/ฐานข้อมูล)
-// ถ้าภายหลังมี backend แค่เปลี่ยนที่เก็บข้อมูลในไฟล์นี้ ส่วน UI ไม่ต้องแก้
-
-import { useCallback, useEffect, useMemo, useState } from "react";
-=======
 // lib/playlist.ts  (** ไฟล์นี้ใช้ "แทนที่" ไฟล์เดิมใน lib/ ทั้งไฟล์ **)
 // จัดการ playlist ของผู้ใช้
 //   - ล็อกอินอยู่  → โหลด/บันทึกกับเซิร์ฟเวอร์ (/api/me/data/playlists) ผูกกับบัญชี
@@ -12,7 +5,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 // ส่วนที่แก้จากไฟล์เดิมมีแค่ 3 จุด: ฟังก์ชัน normalize, effect ตอนโหลด, effect ตอนบันทึก (ที่เหลือเหมือนเดิมทุกบรรทัด)
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
->>>>>>> da07dab (Update project files)
 import type { VideoItem } from "./youtube";
 
 export interface Playlist {
@@ -24,11 +16,8 @@ export interface Playlist {
 }
 
 const STORAGE_KEY = "muverse:playlists";
-<<<<<<< HEAD
-=======
 const API_URL = "/api/me/data/playlists";
 const SAVE_DELAY_MS = 600; // รอให้หยุดแก้ครู่หนึ่งค่อยส่ง ไม่ยิงเซิร์ฟเวอร์ทุกการคลิก
->>>>>>> da07dab (Update project files)
 
 /** วิธีเล่น: เรียงตามลำดับที่นำเข้า (วนซ้ำ) / สุ่ม (วนซ้ำ ไม่ซ้ำจนกว่าจะครบทุกเพลง) / วนซ้ำคลิปเดียว */
 export type PlayMode = "sequential" | "shuffle" | "single";
@@ -52,29 +41,6 @@ function isPlaylist(p: unknown): p is Playlist {
   return !!o && typeof o.id === "string" && typeof o.name === "string" && Array.isArray(o.items);
 }
 
-<<<<<<< HEAD
-export function usePlaylists() {
-  const [playlists, setPlaylists] = useState<Playlist[]>(() => [emptyLiked()]);
-  const [loaded, setLoaded] = useState(false);
-
-  // อ่านครั้งเดียวหลัง mount (ไม่อ่านตอน render เพื่อกัน hydration ไม่ตรงกับฝั่งเซิร์ฟเวอร์)
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed: unknown = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          const all = parsed.filter(isPlaylist).map((p) => ({ ...p, items: p.items.filter(isVideo) }));
-          // ข้อมูลเก่าที่ยังไม่มี “ถูกใจ” จะถูกเติมให้ และ “ถูกใจ” อยู่หน้าสุดเสมอ
-          const liked = all.find((p) => p.id === LIKED_ID) ?? emptyLiked();
-          setPlaylists([{ ...liked, name: "ถูกใจ" }, ...all.filter((p) => p.id !== LIKED_ID)]);
-        }
-      }
-    } catch {
-      /* ข้อมูลเสียหรือ localStorage ใช้ไม่ได้ → เริ่มจากว่าง */
-    }
-    setLoaded(true);
-=======
 /** แปลงข้อมูลดิบ (จาก localStorage หรือเซิร์ฟเวอร์) เป็นรายการ playlist ที่ใช้ได้ คืน null ถ้าไม่ใช่อาร์เรย์ */
 function normalize(parsed: unknown): Playlist[] | null {
   if (!Array.isArray(parsed)) return null;
@@ -122,14 +88,11 @@ export function usePlaylists() {
     return () => {
       cancelled = true;
     };
->>>>>>> da07dab (Update project files)
   }, []);
 
   // บันทึกทุกครั้งที่เปลี่ยน (รอให้อ่านเสร็จก่อน ไม่งั้นจะเขียนทับของเดิมด้วยค่าว่าง)
   useEffect(() => {
     if (!loaded) return;
-<<<<<<< HEAD
-=======
     if (remote.current) {
       const timer = window.setTimeout(() => {
         fetch(API_URL, {
@@ -142,7 +105,6 @@ export function usePlaylists() {
       }, SAVE_DELAY_MS);
       return () => window.clearTimeout(timer);
     }
->>>>>>> da07dab (Update project files)
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(playlists));
     } catch {
