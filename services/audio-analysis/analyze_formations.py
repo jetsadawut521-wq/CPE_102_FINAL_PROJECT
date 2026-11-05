@@ -33,7 +33,8 @@ def detector_frames(video_id, root):
     set_stage(root, "downloading")
     output = root / "clip.%(ext)s"
     command = [sys.executable, "-m", "yt_dlp", "--no-playlist", "--no-progress", "--no-warnings",
-               "--ignore-config", "--socket-timeout", "15", "--retries", "1", "--fragment-retries", "1",
+               "--ignore-config", *( ["--js-runtimes", "node"] if shutil.which("node") else [] ),
+               "--socket-timeout", "15", "--retries", "1", "--extractor-retries", "1", "--fragment-retries", "1",
                "--max-filesize", "150M", "--match-filter", f"duration > 0 & duration <= {MAX_DURATION} & !is_live",
                "-f", "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best",
                "-o", str(output), f"https://www.youtube.com/watch?v={video_id}"]

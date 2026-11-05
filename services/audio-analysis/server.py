@@ -184,6 +184,12 @@ def run_formation_job(video_id):
         job = {"status": "failed", "reason": reason, "stage": read_stage(Path(tempdir.name)) or "unknown"}
     finally:
         if errors is not None:
+            if job.get("status") == "failed":
+                errors.seek(max(0, errors.seek(0, 2) - 4096))
+                tail = errors.read().decode("utf-8", errors="replace")
+                tail = re.sub(r"https?://\S+", "<url>", tail)
+                for line in tail.splitlines()[-6:]:
+                    print(f"[formation-error] {video_id}: {line[:500]}", flush=True)
             errors.close()
         tempdir.cleanup()
     with LOCK:
