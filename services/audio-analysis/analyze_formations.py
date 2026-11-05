@@ -244,6 +244,9 @@ def refine_formation_positions(formations, samples, paths, root):
                 points = pose_positions(result.pose_landmarks)
                 if len(points) == len(formation["points"]):
                     refined.append(points)
+                else:
+                    print(f"[formation-pose] pose-count-mismatch expected={len(formation['points'])} detected={len(points)} time={formation['time']}",
+                          file=sys.stderr, flush=True)
                 if len(refined) >= 3:
                     break
             if refined:
