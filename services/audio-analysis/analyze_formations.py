@@ -168,6 +168,7 @@ def analyze(video_id, root):
 
 if __name__ == "__main__":
     import re
+    import traceback
     if len(sys.argv) != 3 or not re.fullmatch(r"[A-Za-z0-9_-]{11}", sys.argv[1]):
         raise SystemExit("Invalid video ID")
     root = Path(sys.argv[2])
@@ -185,5 +186,6 @@ if __name__ == "__main__":
         reason = "dependency-missing" if isinstance(error, (ImportError, ModuleNotFoundError)) else "analysis-failed"
         if str(error) in ("download-rejected", "tool-missing"):
             reason = str(error)
+        traceback.print_exc(file=sys.stderr)
         print(json.dumps({"error": reason, "stage": stage}))
         raise SystemExit(1)
