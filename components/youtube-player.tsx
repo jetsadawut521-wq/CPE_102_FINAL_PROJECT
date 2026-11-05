@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { YT_STATE, formatTime, loadYouTubeApi, type YTEvent, type YTPlayer } from "@/lib/youtube";
 import type { AutoSegment } from "@/lib/highlight-analysis";
-import type { PoseLandmarker } from "@mediapipe/tasks-vision";
+import type { ObjectDetector } from "@mediapipe/tasks-vision";
 import "./youtube-player.css";
 
 interface Props {
@@ -191,7 +191,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const idleTimer = useRef<number | undefined>(undefined);
   const captureRef = useRef<MediaStream | null>(null);
   const captureVideoRef = useRef<HTMLVideoElement | null>(null);
-  const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
+  const objectDetectorRef = useRef<ObjectDetector | null>(null);
   const formationFrameRef = useRef<number | null>(null);
   const lastFormationFrameRef = useRef(0);
   const lastFormationVideoTimeRef = useRef<number | null>(null);
@@ -665,8 +665,8 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     captureRef.current = null;
     if (captureVideoRef.current) captureVideoRef.current.srcObject = null;
     captureVideoRef.current = null;
-    poseLandmarkerRef.current?.close();
-    poseLandmarkerRef.current = null;
+    objectDetectorRef.current?.close();
+    objectDetectorRef.current = null;
     setFormationPoints([]);
     formationTracksRef.current = [];
     nextFormationTrackIdRef.current = 0;
@@ -713,36 +713,35 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
       captureVideoRef.current = captureVideo;
       await captureVideo.play();
 
-      const { FilesetResolver, PoseLandmarker: PoseLandmarkerFactory } = await import("@mediapipe/tasks-vision");
+      const { FilesetResolver, ObjectDetector: ObjectDetectorFactory } = await import("@mediapipe/tasks-vision");
       const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.2/wasm");
       const options = {
         baseOptions: {
-          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float32/1/efficientdet_lite0.tflite",
         },
         runningMode: "VIDEO",
-        numPoses: 8,
-        minPoseDetectionConfidence: 0.3,
-        minPosePresenceConfidence: 0.3,
-        minTrackingConfidence: 0.3,
+        maxResults: 12,
+        scoreThreshold: 0.25,
+        categoryAllowlist: ["person"],
       } as const;
-      let landmarker: PoseLandmarker;
+      let detector: ObjectDetector;
       try {
-        landmarker = await PoseLandmarkerFactory.createFromOptions(vision, {
+        detector = await ObjectDetectorFactory.createFromOptions(vision, {
           ...options,
           baseOptions: { ...options.baseOptions, delegate: "GPU" },
         });
       } catch {
-        landmarker = await PoseLandmarkerFactory.createFromOptions(vision, {
+        detector = await ObjectDetectorFactory.createFromOptions(vision, {
           ...options,
           baseOptions: { ...options.baseOptions, delegate: "CPU" },
         });
       }
       if (screenTrack && screenTrack.readyState !== "live") {
-        landmarker.close();
+        detector.close();
         stopFormationAnalysis();
         return;
       }
-      poseLandmarkerRef.current = landmarker;
+      objectDetectorRef.current = detector;
       setFormationStatus("running");
 
       const canvas = document.createElement("canvas");
@@ -755,9 +754,9 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
         lastFormationFrameRef.current = now;
         const source = captureVideoRef.current;
         const stage = rootRef.current?.querySelector<HTMLElement>(".yp-stage");
-        const detector = poseLandmarkerRef.current;
+        const objectDetector = objectDetectorRef.current;
         const player = playerRef.current;
-        if (!source || !stage || !detector || !context || !player || source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+        if (!source || !stage || !objectDetector || !context || !player || source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
         const videoTime = safe(player.getCurrentTime());
         if (lastFormationVideoTimeRef.current !== null && videoTime + 0.1 < lastFormationVideoTimeRef.current) {
           lastFormationVideoTimeRef.current = null;
@@ -776,18 +775,16 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
         if (sw <= 0 || sh <= 0) return;
         context.drawImage(source, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
         try {
-          const result = detector.detectForVideo(canvas, Math.round(now));
-          const candidates = result.landmarks.flatMap((pose) => {
-            const shoulderL = pose[11];
-            const shoulderR = pose[12];
-            const hipL = pose[23];
-            const hipR = pose[24];
-            if (!shoulderL || !shoulderR || !hipL || !hipR) return [];
-            const visible = [shoulderL, shoulderR, hipL, hipR].filter((p) => (p.visibility ?? 1) >= 0.15);
-            if (visible.length < 2) return [];
+          const result = objectDetector.detectForVideo(canvas, Math.round(now));
+          const candidates = result.detections.flatMap((detection) => {
+            const isPerson = detection.categories?.some((category) =>
+              category.categoryName?.toLowerCase() === "person" || category.index === 0,
+            );
+            const box = detection.boundingBox;
+            if (!isPerson || !box) return [];
             return [{
-              x: visible.reduce((sum, p) => sum + p.x, 0) / visible.length,
-              y: visible.reduce((sum, p) => sum + p.y, 0) / visible.length,
+              x: (box.originX + box.width / 2) / canvas.width,
+              y: (box.originY + box.height) / canvas.height,
             }];
           }).sort((a, b) => a.x - b.x);
           const points = updateFormationTracks(candidates, formationTracksRef.current, nextFormationTrackIdRef);
@@ -967,7 +964,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
 
         {["loading", "running"].includes(formationStatus) && (
           <aside className="yp-formation-map" aria-label="แผนผังแถว">
-            <strong>แผนผังตำแหน่ง</strong>
+            <strong>แผนผังตำแหน่งยืน</strong>
             <div className="yp-formation-map__stage" aria-hidden="true">
               {formationPoints.map((point, index) => (
                 <span
