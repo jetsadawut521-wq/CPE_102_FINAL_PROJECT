@@ -31,7 +31,7 @@ if ENGINE not in ("fast", "full"):
 LEASE_SECONDS = 8 if ENGINE == "fast" else 30
 JOB_TIMEOUT = 27 if ENGINE == "fast" else 180
 STAGES = {"downloading", "decoding", "separating", "features", "loading-model", "analyzing",
-          "extracting-frames", "tracking-dancers"}
+          "extracting-frames", "tracking-dancers", "refining-positions"}
 ERROR_CODES = {"dependency-missing", "tool-missing", "download-timeout", "decode-timeout",
                "download-failed", "decode-failed", "download-rejected", "analysis-failed"}
 FORMATION_ERRORS = {"dependency-missing", "tool-missing", "download-timeout", "download-failed",
@@ -99,8 +99,8 @@ def read_cache(video_id):
 
 
 def formation_cache_path(video_id):
-    # Keep results from the previous count-selection algorithm out of the new one.
-    return CACHE_DIR / f"formation-v3-{video_id}.json"
+    # Keep results from earlier count and position algorithms out of the new one.
+    return CACHE_DIR / f"formation-v5-{video_id}.json"
 
 
 def read_formation_cache(video_id):
@@ -193,8 +193,8 @@ def run_formation_job(video_id):
                     print(f"[formation-error] {video_id}: {line[:500]}", flush=True)
             else:
                 for line in tail.splitlines():
-                    if '"formation_counts"' in line:
-                        print(f"[formation] {video_id}: detector {line[:500]}", flush=True)
+                    if '"formation_counts"' in line or "[formation-pose]" in line:
+                        print(f"[formation] {video_id}: {line[:500]}", flush=True)
             errors.close()
         tempdir.cleanup()
     with LOCK:
