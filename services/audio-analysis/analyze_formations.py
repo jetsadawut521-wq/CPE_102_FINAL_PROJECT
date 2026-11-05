@@ -8,7 +8,7 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
-POSE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+PERSON_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/float32/1/efficientdet_lite2.tflite"
 MAX_DURATION = 900
 SAMPLE_FPS = 1
 
@@ -17,13 +17,13 @@ def set_stage(root, stage):
     (root / "stage").write_text(stage)
 
 
-def pose_model():
+def person_model():
     root = Path(os.environ.get("FORMATION_MODEL_CACHE", str(Path.home() / ".cache" / "muverse-audio" / "models")))
     root.mkdir(parents=True, exist_ok=True)
-    model = root / "pose_landmarker_lite.task"
+    model = root / "efficientdet_lite2.tflite"
     if not model.exists():
         temporary = model.with_suffix(".download")
-        with urllib.request.urlopen(POSE_MODEL_URL, timeout=30) as response, temporary.open("wb") as destination:
+        with urllib.request.urlopen(PERSON_MODEL_URL, timeout=30) as response, temporary.open("wb") as destination:
             shutil.copyfileobj(response, destination)
         temporary.replace(model)
     return model
@@ -79,33 +79,53 @@ def collect_detections(paths, root):
     import numpy as np
     from PIL import Image
 
-    model = pose_model()
-    options = mp.tasks.vision.PoseLandmarkerOptions(
+    model = person_model()
+    options = mp.tasks.vision.ObjectDetectorOptions(
         base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
         running_mode=mp.tasks.vision.RunningMode.IMAGE,
-        num_poses=12,
-        min_pose_detection_confidence=0.45,
-        min_pose_presence_confidence=0.45,
-        min_tracking_confidence=0.45,
+        max_results=16,
+        score_threshold=0.35,
+        category_allowlist=["person"],
     )
     samples = []
-    with mp.tasks.vision.PoseLandmarker.create_from_options(options) as detector:
+    with mp.tasks.vision.ObjectDetector.create_from_options(options) as detector:
         for index, path in enumerate(paths):
             with Image.open(path) as image:
                 rgb = np.asarray(image.convert("RGB"))
+            height, width = rgb.shape[:2]
             result = detector.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
-            detections = []
-            for landmarks in result.pose_landmarks:
-                # Use visible ankle keypoints as the dancer's floor anchor.
-                # Bounding-box edges and swinging toes drift during dance moves.
-                feet = [landmarks[i] for i in (27, 28)
-                        if i < len(landmarks) and (getattr(landmarks[i], "visibility", 0) or 0) >= 0.35
-                        and 0 <= landmarks[i].x <= 1 and 0 <= landmarks[i].y <= 1]
-                if not feet:
+            candidates = []
+            for detection in result.detections:
+                category = detection.categories[0] if detection.categories else None
+                box = detection.bounding_box
+                if not category or (category.category_name or "").lower() != "person" or not box:
                     continue
-                detections.append({"x": max(0.02, min(0.98, sum(point.x for point in feet) / len(feet))),
-                                   "y": max(0.04, min(0.96, sum(point.y for point in feet) / len(feet)))})
+                left = max(0, box.origin_x) / width
+                top = max(0, box.origin_y) / height
+                right = min(width, box.origin_x + box.width) / width
+                bottom = min(height, box.origin_y + box.height) / height
+                if right <= left or bottom <= top:
+                    continue
+                candidates.append({"x": (left + right) / 2, "y": top + (bottom - top) * 0.92,
+                                   "score": category.score, "box": (left, top, right, bottom)})
+            candidates.sort(key=lambda point: point["score"], reverse=True)
+            detections = []
+            for candidate in candidates:
+                duplicate = False
+                for accepted in detections:
+                    a = candidate["box"]
+                    b = accepted["box"]
+                    intersection = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+                    area_a = (a[2] - a[0]) * (a[3] - a[1])
+                    area_b = (b[2] - b[0]) * (b[3] - b[1])
+                    iou = intersection / max(area_a + area_b - intersection, 1e-8)
+                    if iou > 0.65:
+                        duplicate = True
+                        break
+                if not duplicate:
+                    detections.append(candidate)
             detections.sort(key=lambda point: point["x"])
+            detections = [{"x": point["x"], "y": point["y"]} for point in detections]
             samples.append({"time": index / SAMPLE_FPS, "points": detections})
     return samples
 
