@@ -761,7 +761,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
                 <span
                   key={index}
                   className="yp-formation-map__dot"
-                  style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%`, background: point.color }}
+                  style={{ left: `${(mirrored ? 1 - point.x : point.x) * 100}%`, top: `${point.y * 100}%`, background: point.color }}
                 />
               ))}
               {formationPoints.length === 0 && <span className="yp-formation-map__empty">···</span>}

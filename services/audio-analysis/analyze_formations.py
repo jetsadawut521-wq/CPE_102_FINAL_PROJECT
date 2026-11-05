@@ -87,7 +87,7 @@ def collect_detections(paths, root):
         # Dancers in wide practice-room shots can be small or partly occluded.
         # Keep lower-confidence person boxes, then reject implausibly small boxes
         # below before they affect the group-size estimate.
-        score_threshold=0.2,
+        score_threshold=0.15,
         category_allowlist=["person"],
     )
     samples = []
@@ -111,9 +111,12 @@ def collect_detections(paths, root):
                     continue
                 box_width = right - left
                 box_height = bottom - top
-                if box_height < 0.12 or box_width < 0.025:
+                if box_height < 0.08 or box_width < 0.02:
                     continue
-                candidates.append({"x": (left + right) / 2, "y": top + (bottom - top) * 0.92,
+                # The bottom center approximates where the dancer meets the floor;
+                # a fixed 92% offset floats dots above the floor by different
+                # amounts as bounding-box heights change with pose and distance.
+                candidates.append({"x": (left + right) / 2, "y": bottom,
                                    "score": category.score, "box": (left, top, right, bottom)})
             candidates.sort(key=lambda point: point["score"], reverse=True)
             detections = []
