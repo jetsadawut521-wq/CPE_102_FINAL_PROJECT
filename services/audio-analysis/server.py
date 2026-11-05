@@ -19,7 +19,9 @@ TOKEN = os.environ.get("AUDIO_ANALYSIS_TOKEN", "")
 JOBS = {}
 LOCK = threading.Lock()
 POOL = ThreadPoolExecutor(max_workers=1)
+FORMATION_POOL = ThreadPoolExecutor(max_workers=1)
 RUNNER = Path(__file__).with_name("analyze.py")
+FORMATION_RUNNER = Path(__file__).with_name("analyze_formations.py")
 CACHE_DIR = Path(os.environ.get("AUDIO_ANALYSIS_CACHE", str(Path.home() / ".cache" / "muverse-audio")))
 CACHE_TTL = 30 * 86400
 FAST_PROFILE = "fast-repeat-v3"
@@ -28,9 +30,15 @@ if ENGINE not in ("fast", "full"):
     raise ValueError("AUDIO_ANALYSIS_ENGINE must be fast or full")
 LEASE_SECONDS = 8 if ENGINE == "fast" else 30
 JOB_TIMEOUT = 27 if ENGINE == "fast" else 180
-STAGES = {"downloading", "decoding", "separating", "features", "loading-model", "analyzing"}
+STAGES = {"downloading", "decoding", "separating", "features", "loading-model", "analyzing",
+          "extracting-frames", "tracking-dancers"}
 ERROR_CODES = {"dependency-missing", "tool-missing", "download-timeout", "decode-timeout",
                "download-failed", "decode-failed", "download-rejected", "analysis-failed"}
+FORMATION_ERRORS = {"dependency-missing", "tool-missing", "download-timeout", "download-failed",
+                    "download-rejected", "decode-failed", "analysis-failed", "invalid-result", "timeout"}
+FORMATION_JOBS = {}
+FORMATION_CACHE_TTL = 30 * 86400
+FORMATION_JOB_TIMEOUT = 900
 
 
 def read_stage(root):
@@ -88,6 +96,99 @@ def read_cache(video_id):
         except (OSError, ValueError, TypeError, KeyError):
             continue
     return None
+
+
+def formation_cache_path(video_id):
+    return CACHE_DIR / f"formation-v1-{video_id}.json"
+
+
+def read_formation_cache(video_id):
+    path = formation_cache_path(video_id)
+    try:
+        if time.time() - path.stat().st_mtime > FORMATION_CACHE_TTL:
+            return None
+        data = json.loads(path.read_text())
+        return data if valid_formations(data.get("formations")) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def valid_formations(formations):
+    if not isinstance(formations, list) or len(formations) > 1000:
+        return False
+    previous_time = -1
+    for item in formations:
+        if (not isinstance(item, dict) or not isinstance(item.get("time"), (int, float)) or
+                not math.isfinite(item["time"]) or item["time"] < previous_time):
+            return False
+        points = item.get("points")
+        if not isinstance(points, list) or not 2 <= len(points) <= 20:
+            return False
+        if not all(isinstance(point, dict) and isinstance(point.get("x"), (int, float)) and math.isfinite(point["x"]) and
+                   isinstance(point.get("y"), (int, float)) and math.isfinite(point["y"]) and
+                   0 <= point["x"] <= 1 and 0 <= point["y"] <= 1
+                   for point in points):
+            return False
+        previous_time = item["time"]
+    return True
+
+
+def run_formation_job(video_id):
+    with LOCK:
+        job = FORMATION_JOBS.get(video_id, {})
+        job.update(status="processing", stage="downloading", updated=time.time())
+        FORMATION_JOBS[video_id] = job
+    tempdir = tempfile.TemporaryDirectory(prefix="muverse-formation-")
+    process = None
+    errors = None
+    began = time.monotonic()
+    try:
+        root = Path(tempdir.name)
+        errors = (root / "worker.log").open("w+b")
+        env = os.environ.copy()
+        threads = str(max(1, min(2, cpu_threads())))
+        env["FORMATION_THREADS"] = threads
+        for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+            env[name] = threads
+        process = subprocess.Popen([sys.executable, str(FORMATION_RUNNER), video_id, str(root)],
+                                   stdout=subprocess.PIPE, stderr=errors, env=env,
+                                   start_new_session=(os.name != "nt"))
+        while True:
+            try:
+                output, _ = process.communicate(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                stage = read_stage(root)
+                if stage:
+                    with LOCK:
+                        FORMATION_JOBS[video_id]["stage"] = stage
+                if time.monotonic() - began > FORMATION_JOB_TIMEOUT:
+                    raise RuntimeError("timeout")
+        if process.returncode:
+            try:
+                details = json.loads(output.decode().strip().splitlines()[-1])
+                reason = details.get("error")
+            except (ValueError, IndexError, UnicodeError, AttributeError):
+                reason = None
+            raise RuntimeError(reason if reason in FORMATION_ERRORS else "analysis-failed")
+        result = json.loads(output.decode().strip().splitlines()[-1])
+        if not valid_formations(result.get("formations")):
+            raise RuntimeError("invalid-result")
+        job = {"status": "ready", "engine": "formation-v1", "formations": result["formations"]}
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        formation_cache_path(video_id).write_text(json.dumps(job, separators=(",", ":")))
+    except Exception as error:
+        if process is not None:
+            stop_process(process)
+        reason = str(error) if str(error) in FORMATION_ERRORS else "analysis-failed"
+        job = {"status": "failed", "reason": reason, "stage": read_stage(Path(tempdir.name)) or "unknown"}
+    finally:
+        if errors is not None:
+            errors.close()
+        tempdir.cleanup()
+    with LOCK:
+        FORMATION_JOBS[video_id] = {**job, "updated": time.time()}
+    print(f"[formation] {video_id}: {job['status']} ({time.monotonic() - began:.1f}s) {job.get('reason', '')}", flush=True)
 
 
 def save_cache(video_id, job):
@@ -259,7 +360,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if TOKEN and not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + TOKEN):
             return self.respond(401, {"error": "unauthorized"})
-        match = re.fullmatch(r"/jobs/([A-Za-z0-9_-]{11})", urlparse(self.path).path)
+        path = urlparse(self.path).path
+        formation_match = re.fullmatch(r"/formations/([A-Za-z0-9_-]{11})", path)
+        if formation_match:
+            return self.handle_formation(formation_match[1])
+        match = re.fullmatch(r"/jobs/([A-Za-z0-9_-]{11})", path)
         if not match:
             return self.respond(400, {"error": "invalid-video-id"})
         video_id = match[1]
@@ -289,6 +394,25 @@ class Handler(BaseHTTPRequestHandler):
             JOBS[video_id]["lastRequested"] = now
             result = {k: v for k, v in JOBS[video_id].items() if k not in ("lastRequested", "created")}
             result.setdefault("engine", ENGINE)
+        self.respond(200, result)
+
+    def handle_formation(self, video_id):
+        with LOCK:
+            now = time.time()
+            for key, job in list(FORMATION_JOBS.items()):
+                if job["status"] in ("ready", "failed") and now - job["updated"] > FORMATION_CACHE_TTL:
+                    del FORMATION_JOBS[key]
+            if video_id not in FORMATION_JOBS:
+                cached = read_formation_cache(video_id)
+                if cached is not None:
+                    FORMATION_JOBS[video_id] = {**cached, "updated": now}
+            if video_id not in FORMATION_JOBS:
+                if sum(job["status"] in ("queued", "processing") for job in FORMATION_JOBS.values()) >= 2:
+                    return self.respond(429, {"status": "busy", "engine": "formation-v1"})
+                FORMATION_JOBS[video_id] = {"status": "queued", "stage": "downloading", "updated": now}
+                FORMATION_POOL.submit(run_formation_job, video_id)
+            job = FORMATION_JOBS[video_id]
+            result = {key: value for key, value in job.items() if key != "updated"}
         self.respond(200, result)
 
 
