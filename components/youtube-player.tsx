@@ -815,12 +815,10 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
           });
           const candidates = suppressDuplicateDetections(rawCandidates).sort((a, b) => a.x - b.x);
           const points = updateFormationTracks(candidates, formationTracksRef.current, nextFormationTrackIdRef);
-          if (points.length < 2) {
-            setFormationMessage("ต้องเห็นนักเต้นอย่างน้อย 2 คนเพื่ออ่านการแปรแถว");
-            return;
-          }
-
           const memory = formationMemoryRef.current;
+          // Keep the last confirmed layout when a few frames temporarily miss dancers.
+          if (points.length < 2) return;
+
           const signature = getFormationSignature(points);
           if (!memory.baseline) {
             setFormationPoints(points);
@@ -844,7 +842,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
             memory.candidateFrames.push(points);
             if (memory.candidateFrames.length > 10) memory.candidateFrames.shift();
           }
-          if (memory.candidateSince !== null && now - memory.candidateSince >= 650) {
+          if (memory.candidateSince !== null && now - memory.candidateSince >= 1100) {
             setFormationPoints(averageFormationPoints(memory.candidateFrames));
             memory.baseline = signature;
             memory.candidateSince = null;
