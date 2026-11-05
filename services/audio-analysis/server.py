@@ -406,7 +406,8 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             now = time.time()
             for key, job in list(FORMATION_JOBS.items()):
-                if job["status"] in ("ready", "failed") and now - job["updated"] > FORMATION_CACHE_TTL:
+                ttl = 15 if job["status"] == "failed" else FORMATION_CACHE_TTL
+                if job["status"] in ("ready", "failed") and now - job["updated"] > ttl:
                     del FORMATION_JOBS[key]
             if video_id not in FORMATION_JOBS:
                 cached = read_formation_cache(video_id)
