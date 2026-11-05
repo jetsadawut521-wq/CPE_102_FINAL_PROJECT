@@ -62,7 +62,91 @@ function isTextEntry(el: EventTarget | null): boolean {
 
 type FlashState = { text: string; pos: "left" | "right" | "center" };
 type FormationPoint = { x: number; y: number; color: string };
+type FormationTrack = { id: number; x: number; y: number; missed: number };
 const FORMATION_COLORS = ["#ffe600", "#ff5b9a", "#4de1ff", "#a78bfa", "#ff9f43", "#68e39a"];
+
+function updateFormationTracks(detections: { x: number; y: number }[], tracks: FormationTrack[], nextId: { current: number }): FormationPoint[] {
+  for (const track of tracks) track.missed++;
+  const claimed = new Set<number>();
+  for (const detection of detections) {
+    let nearest: FormationTrack | undefined;
+    let nearestDistance = 0.2;
+    for (const track of tracks) {
+      if (track.missed > 6 || claimed.has(track.id)) continue;
+      const distance = Math.hypot(track.x - detection.x, track.y - detection.y);
+      if (distance < nearestDistance) {
+        nearest = track;
+        nearestDistance = distance;
+      }
+    }
+    if (nearest) {
+      nearest.x = detection.x;
+      nearest.y = detection.y;
+      nearest.missed = 0;
+      claimed.add(nearest.id);
+    } else {
+      tracks.push({ id: nextId.current++, x: detection.x, y: detection.y, missed: 0 });
+      claimed.add(tracks[tracks.length - 1].id);
+    }
+  }
+  for (let i = tracks.length - 1; i >= 0; i--) {
+    if (tracks[i].missed > 6) tracks.splice(i, 1);
+  }
+  return tracks
+    .slice()
+    .sort((a, b) => a.x - b.x)
+    .map((track) => ({ x: track.x, y: track.y, color: FORMATION_COLORS[track.id % FORMATION_COLORS.length] }));
+}
+
+type FormationSignature = { distances: number[]; centerX: number; centerY: number; spread: number; covariance: [number, number, number] };
+function getFormationSignature(points: FormationPoint[]): FormationSignature {
+  const centerX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
+  const centerY = points.reduce((sum, point) => sum + point.y, 0) / points.length;
+  const distances: number[] = [];
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      distances.push(Math.hypot(points[i].x - points[j].x, points[i].y - points[j].y));
+    }
+  }
+  distances.sort((a, b) => a - b);
+  const spread = distances[distances.length - 1] ?? 0;
+  const covarianceScale = Math.max(points.length * spread * spread, 0.001);
+  const covariance: [number, number, number] = [0, 0, 0];
+  for (const point of points) {
+    const x = point.x - centerX;
+    const y = point.y - centerY;
+    covariance[0] += (x * x) / covarianceScale;
+    covariance[1] += (y * y) / covarianceScale;
+    covariance[2] += (x * y) / covarianceScale;
+  }
+  return {
+    distances: spread > 0 ? distances.map((distance) => distance / spread) : distances,
+    centerX,
+    centerY,
+    spread,
+    covariance,
+  };
+}
+
+function formationDifference(a: FormationSignature, b: FormationSignature): number {
+  if (a.distances.length !== b.distances.length) return 1;
+  const shape = a.distances.length
+    ? Math.sqrt(a.distances.reduce((sum, value, index) => sum + (value - b.distances[index]) ** 2, 0) / a.distances.length)
+    : 0;
+  const orientation = Math.sqrt(a.covariance.reduce((sum, value, index) => sum + (value - b.covariance[index]) ** 2, 0) / a.covariance.length);
+  const center = Math.min(1, Math.hypot(a.centerX - b.centerX, a.centerY - b.centerY) / 0.42);
+  const scale = Math.min(1, Math.abs(Math.log(Math.max(a.spread, 0.02) / Math.max(b.spread, 0.02))) / 0.75);
+  return Math.max(shape, orientation, center, scale);
+}
+
+function averageFormationPoints(samples: FormationPoint[][]): FormationPoint[] {
+  const count = samples[samples.length - 1]?.length ?? 0;
+  return Array.from({ length: count }, (_, index) => ({
+    x: samples.reduce((sum, sample) => sum + (sample[index]?.x ?? 0), 0) / samples.length,
+    y: samples.reduce((sum, sample) => sum + (sample[index]?.y ?? 0), 0) / samples.length,
+    color: FORMATION_COLORS[index % FORMATION_COLORS.length],
+  }));
+}
 
 export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onError, loopOne = false, highlights = NO_HIGHLIGHTS }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -110,9 +194,24 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
   const formationFrameRef = useRef<number | null>(null);
   const lastFormationFrameRef = useRef(0);
+  const lastFormationVideoTimeRef = useRef<number | null>(null);
+  const formationTracksRef = useRef<FormationTrack[]>([]);
+  const nextFormationTrackIdRef = useRef(0);
   const [formationStatus, setFormationStatus] = useState<"off" | "loading" | "running" | "error">("off");
   const [formationError, setFormationError] = useState<string | null>(null);
   const [formationPoints, setFormationPoints] = useState<FormationPoint[]>([]);
+  const [formationMessage, setFormationMessage] = useState("กำลังหาตำแหน่งตั้งต้นของแถว…");
+  const formationMemoryRef = useRef<{
+    baseline: FormationSignature | null;
+    candidateSince: number | null;
+    candidateSignature: FormationSignature | null;
+    candidateFrames: FormationPoint[][];
+  }>({
+    baseline: null,
+    candidateSince: null,
+    candidateSignature: null,
+    candidateFrames: [],
+  });
 
   useEffect(() => {
     onEndedRef.current = onEnded;
@@ -130,6 +229,20 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     loopHlRef.current = false;
     setLoopHl(false);
   }, [videoId, highlights]);
+
+  useEffect(() => {
+    setFormationPoints([]);
+    formationTracksRef.current = [];
+    nextFormationTrackIdRef.current = 0;
+    lastFormationVideoTimeRef.current = null;
+    formationMemoryRef.current = {
+      baseline: null,
+      candidateSince: null,
+      candidateSignature: null,
+      candidateFrames: [],
+    };
+    setFormationMessage("กำลังหาตำแหน่งตั้งต้นของแถว…");
+  }, [videoId]);
 
   const showFlash = useCallback((text: string, pos: FlashState["pos"]) => {
     setFlash({ text, pos });
@@ -547,6 +660,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const stopFormationAnalysis = useCallback(() => {
     if (formationFrameRef.current !== null) cancelAnimationFrame(formationFrameRef.current);
     formationFrameRef.current = null;
+    lastFormationVideoTimeRef.current = null;
     captureRef.current?.getTracks().forEach((track) => track.stop());
     captureRef.current = null;
     if (captureVideoRef.current) captureVideoRef.current.srcObject = null;
@@ -554,6 +668,15 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     poseLandmarkerRef.current?.close();
     poseLandmarkerRef.current = null;
     setFormationPoints([]);
+    formationTracksRef.current = [];
+    nextFormationTrackIdRef.current = 0;
+    formationMemoryRef.current = {
+      baseline: null,
+      candidateSince: null,
+      candidateSignature: null,
+      candidateFrames: [],
+    };
+    setFormationMessage("กำลังหาตำแหน่งตั้งต้นของแถว…");
     setFormationStatus("off");
   }, []);
 
@@ -564,6 +687,16 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
       return;
     }
     setFormationError(null);
+    setFormationPoints([]);
+    formationTracksRef.current = [];
+    nextFormationTrackIdRef.current = 0;
+    formationMemoryRef.current = {
+      baseline: null,
+      candidateSince: null,
+      candidateSignature: null,
+      candidateFrames: [],
+    };
+    setFormationMessage("กำลังหาตำแหน่งตั้งต้นของแถว…");
     setFormationStatus("loading");
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
@@ -584,13 +717,13 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
       const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.2/wasm");
       const options = {
         baseOptions: {
-          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
         },
         runningMode: "VIDEO",
-        numPoses: 12,
-        minPoseDetectionConfidence: 0.45,
-        minPosePresenceConfidence: 0.45,
-        minTrackingConfidence: 0.45,
+        numPoses: 8,
+        minPoseDetectionConfidence: 0.3,
+        minPosePresenceConfidence: 0.3,
+        minTrackingConfidence: 0.3,
       } as const;
       let landmarker: PoseLandmarker;
       try {
@@ -613,8 +746,8 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
       setFormationStatus("running");
 
       const canvas = document.createElement("canvas");
-      canvas.width = 640;
-      canvas.height = 360;
+      canvas.width = 960;
+      canvas.height = 540;
       const context = canvas.getContext("2d", { alpha: false });
       const analyzeFrame = (now: number) => {
         formationFrameRef.current = requestAnimationFrame(analyzeFrame);
@@ -623,7 +756,16 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
         const source = captureVideoRef.current;
         const stage = rootRef.current?.querySelector<HTMLElement>(".yp-stage");
         const detector = poseLandmarkerRef.current;
-        if (!source || !stage || !detector || !context || source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+        const player = playerRef.current;
+        if (!source || !stage || !detector || !context || !player || source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+        const videoTime = safe(player.getCurrentTime());
+        if (lastFormationVideoTimeRef.current !== null && videoTime + 0.1 < lastFormationVideoTimeRef.current) {
+          lastFormationVideoTimeRef.current = null;
+        }
+        if (lastFormationVideoTimeRef.current !== null) {
+          if (!playingRef.current || videoTime <= lastFormationVideoTimeRef.current + 0.015) return;
+        }
+        lastFormationVideoTimeRef.current = videoTime;
         const rect = stage.getBoundingClientRect();
         const scaleX = source.videoWidth / window.innerWidth;
         const scaleY = source.videoHeight / window.innerHeight;
@@ -641,17 +783,51 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
             const hipL = pose[23];
             const hipR = pose[24];
             if (!shoulderL || !shoulderR || !hipL || !hipR) return [];
-            const visible = [shoulderL, shoulderR, hipL, hipR].filter((p) => (p.visibility ?? 1) >= 0.25);
+            const visible = [shoulderL, shoulderR, hipL, hipR].filter((p) => (p.visibility ?? 1) >= 0.15);
             if (visible.length < 2) return [];
             return [{
               x: visible.reduce((sum, p) => sum + p.x, 0) / visible.length,
               y: visible.reduce((sum, p) => sum + p.y, 0) / visible.length,
             }];
           }).sort((a, b) => a.x - b.x);
-          setFormationPoints(candidates.map((point, index) => ({
-            ...point,
-            color: FORMATION_COLORS[index % FORMATION_COLORS.length],
-          })));
+          const points = updateFormationTracks(candidates, formationTracksRef.current, nextFormationTrackIdRef);
+          if (points.length < 2) {
+            setFormationMessage("ต้องเห็นนักเต้นอย่างน้อย 2 คนเพื่ออ่านการแปรแถว");
+            return;
+          }
+
+          const memory = formationMemoryRef.current;
+          const signature = getFormationSignature(points);
+          if (!memory.baseline) {
+            setFormationPoints(points);
+            memory.baseline = signature;
+            setFormationMessage(`แถวตั้งต้น · ${points.length} คน`);
+            return;
+          }
+
+          const difference = formationDifference(memory.baseline, signature);
+          if (difference <= 0.34) {
+            memory.candidateSince = null;
+            memory.candidateSignature = null;
+            memory.candidateFrames = [];
+            return;
+          }
+          if (!memory.candidateSignature || formationDifference(memory.candidateSignature, signature) > 0.18) {
+            memory.candidateSince = now;
+            memory.candidateSignature = signature;
+            memory.candidateFrames = [points];
+          } else {
+            memory.candidateFrames.push(points);
+            if (memory.candidateFrames.length > 10) memory.candidateFrames.shift();
+          }
+          if (memory.candidateSince !== null && now - memory.candidateSince >= 650) {
+            setFormationPoints(averageFormationPoints(memory.candidateFrames));
+            memory.baseline = signature;
+            memory.candidateSince = null;
+            memory.candidateSignature = null;
+            memory.candidateFrames = [];
+            setFormationMessage(`ตรวจพบการเปลี่ยนแถว · ${points.length} คน`);
+          }
         } catch {
           // เฟรมที่เบราว์เซอร์กำลังเปลี่ยนขนาดหรือแชร์ไม่ทัน ข้ามเฟรมนั้นแล้วลองต่อ
         }
@@ -730,7 +906,8 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
 
   return (
     <div ref={rootRef} className={`yp-root ${isFullscreen ? "is-fullscreen" : ""} ${isFullscreen && idle ? "is-idle" : ""}`}>
-      <div className={`yp-stage ${mirrored ? "is-mirrored" : ""}`}>
+      <div className={`yp-view-layout ${["loading", "running"].includes(formationStatus) ? "has-formation" : ""}`}>
+        <div className={`yp-stage ${mirrored ? "is-mirrored" : ""}`}>
         {/* yp-frame ถูกขยายให้สูงกว่าเวที แล้วตัดส่วนเกินทิ้ง เพื่อซ่อนแถบชื่อคลิปของ YouTube
             (ตัวอักษรนั้นอยู่ใน iframe ข้ามโดเมน จึงกลับด้านเฉพาะตัวอักษรไม่ได้ ต้องซ่อนแทน) */}
         <div className="yp-frame" ref={hostRef} />
@@ -738,16 +915,6 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
         {/* ชั้นรับการแตะ อยู่เหนือ iframe และไม่ถูกกลับด้าน ซ้าย/ขวาจึงตรงกับที่ผู้ใช้เห็นเสมอ */}
         <div className="yp-tap" onPointerUp={handleTap} aria-hidden="true">
           {flash && <span className={`yp-flash yp-flash--${flash.pos}`}>{flash.text}</span>}
-        </div>
-
-        <div className="yp-formation-overlay" aria-hidden="true">
-          {formationPoints.map((point, index) => (
-            <span
-              key={index}
-              className="yp-formation-dot"
-              style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%`, color: point.color, background: point.color }}
-            />
-          ))}
         </div>
 
         {/* ปุ่มเต็มจอ: จางๆ มุมขวาล่างของจอ ชัดขึ้นเมื่อเอาเมาส์ไปจ่อ (อยู่นอก yp-frame จึงไม่ถูกกลับด้าน) */}
@@ -796,6 +963,24 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
             {error}
           </div>
         )}
+        </div>
+
+        {["loading", "running"].includes(formationStatus) && (
+          <aside className="yp-formation-map" aria-label="แผนผังแถว">
+            <strong>แผนผังตำแหน่ง</strong>
+            <div className="yp-formation-map__stage" aria-hidden="true">
+              {formationPoints.map((point, index) => (
+                <span
+                  key={index}
+                  className="yp-formation-map__dot"
+                  style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%`, background: point.color }}
+                />
+              ))}
+              {formationPoints.length === 0 && <span className="yp-formation-map__empty">···</span>}
+            </div>
+            <small>{formationStatus === "loading" ? "กำลังเริ่มระบบตรวจจับ…" : formationMessage}</small>
+          </aside>
+        )}
       </div>
 
       {!isFullscreen && (
@@ -805,11 +990,11 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
             disabled={formationStatus === "loading"}
             onClick={formationStatus === "running" ? stopFormationAnalysis : startFormationAnalysis}
           >
-            {formationStatus === "loading" ? "กำลังเริ่มวิเคราะห์…" : formationStatus === "running" ? "หยุดติดตามตำแหน่ง" : "แสดงตำแหน่งนักเต้น"}
+            {formationStatus === "loading" ? "กำลังเริ่มวิเคราะห์…" : formationStatus === "running" ? "หยุดวิเคราะห์แถว" : "วิเคราะห์แถวแบบเรียลไทม์"}
           </button>
           <small>
             {formationStatus === "running"
-              ? `กำลังติดตาม ${formationPoints.length} คน · ประมวลผลในเครื่อง`
+              ? "แผนผังจะค้างเมื่อคลิปหยุด และเปลี่ยนเมื่อรูปแบบแถวเปลี่ยนต่อเนื่อง · ประมวลผลในเครื่อง"
               : "เมื่อระบบถาม ให้เลือกแชร์ Chrome Tab หน้านี้ · ภาพไม่ถูกส่งไปเซิร์ฟเวอร์"}
           </small>
           {formationError && <small className="yp-formation-error" role="status">วิเคราะห์ตำแหน่งไม่ได้: {formationError}</small>}
