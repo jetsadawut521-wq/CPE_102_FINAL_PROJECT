@@ -99,7 +99,8 @@ def read_cache(video_id):
 
 
 def formation_cache_path(video_id):
-    return CACHE_DIR / f"formation-v1-{video_id}.json"
+    # Keep results from the previous count-selection algorithm out of the new one.
+    return CACHE_DIR / f"formation-v2-{video_id}.json"
 
 
 def read_formation_cache(video_id):
@@ -184,12 +185,16 @@ def run_formation_job(video_id):
         job = {"status": "failed", "reason": reason, "stage": read_stage(Path(tempdir.name)) or "unknown"}
     finally:
         if errors is not None:
+            errors.seek(max(0, errors.seek(0, 2) - 4096))
+            tail = errors.read().decode("utf-8", errors="replace")
             if job.get("status") == "failed":
-                errors.seek(max(0, errors.seek(0, 2) - 4096))
-                tail = errors.read().decode("utf-8", errors="replace")
                 tail = re.sub(r"https?://\S+", "<url>", tail)
                 for line in tail.splitlines()[-6:]:
                     print(f"[formation-error] {video_id}: {line[:500]}", flush=True)
+            else:
+                for line in tail.splitlines():
+                    if '"formation_counts"' in line:
+                        print(f"[formation] {video_id}: detector {line[:500]}", flush=True)
             errors.close()
         tempdir.cleanup()
     with LOCK:

@@ -84,7 +84,10 @@ def collect_detections(paths, root):
         base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
         running_mode=mp.tasks.vision.RunningMode.IMAGE,
         max_results=16,
-        score_threshold=0.35,
+        # Dancers in wide practice-room shots can be small or partly occluded.
+        # Keep lower-confidence person boxes, then reject implausibly small boxes
+        # below before they affect the group-size estimate.
+        score_threshold=0.2,
         category_allowlist=["person"],
     )
     samples = []
@@ -105,6 +108,10 @@ def collect_detections(paths, root):
                 right = min(width, box.origin_x + box.width) / width
                 bottom = min(height, box.origin_y + box.height) / height
                 if right <= left or bottom <= top:
+                    continue
+                box_width = right - left
+                box_height = bottom - top
+                if box_height < 0.12 or box_width < 0.025:
                     continue
                 candidates.append({"x": (left + right) / 2, "y": top + (bottom - top) * 0.92,
                                    "score": category.score, "box": (left, top, right, bottom)})
@@ -135,13 +142,22 @@ def build_timeline(samples):
     # only after three successive samples agree on dancer count and geometry.
     if not samples:
         return []
-    counts = Counter(len(sample["points"]) for sample in samples if len(sample["points"]) >= 2)
+    frame_counts = [len(sample["points"]) for sample in samples]
+    counts = Counter(count for count in frame_counts if count >= 2)
     if not counts:
         return []
-    # A practice group normally has a fixed roster. Use the most frequently
-    # detected group size for the whole clip so a brief occlusion cannot add or
-    # remove dots from the map.
-    target_count = max(counts, key=lambda count: (counts[count], count))
+    # Prefer the largest count that is repeatedly supported in nearby samples.
+    # A clip-wide mode systematically undercounts when a dancer is often hidden
+    # behind another dancer; requiring 3 detections within a 5-second window
+    # avoids letting a one-frame false positive increase the roster.
+    supported_counts = set()
+    for start in range(max(1, len(frame_counts) - 4)):
+        window = frame_counts[start:start + 5]
+        window_counts = Counter(count for count in window if count >= 2)
+        supported_counts.update(count for count, frequency in window_counts.items() if frequency >= 3)
+    target_count = max(supported_counts) if supported_counts else max(counts, key=lambda count: (counts[count], count))
+    print(json.dumps({"formation_counts": dict(sorted(counts.items())),
+                      "persistent_counts": sorted(supported_counts), "selected_count": target_count}), file=sys.stderr, flush=True)
     layouts = []
     current = None
     candidate = []
