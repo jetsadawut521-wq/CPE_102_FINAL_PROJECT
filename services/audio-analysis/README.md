@@ -11,11 +11,13 @@ NATTEN หรือโมเดลที่ต้องดาวน์โหล�
 
 ## ผู้ใช้ที่ติดตั้งตามขั้นตอนเดิมแล้ว
 
-ไม่ต้องติดตั้งโมเดลหรือแพ็กเกจเพิ่ม อัปเดตโค้ดแล้วเปิดตัววิเคราะห์ใหม่ใน Ubuntu:
+อัปเดตแพ็กเกจสำหรับตัววิเคราะห์แถวครั้งแรก แล้วเปิด worker ใหม่ใน Ubuntu:
 
 ```bash
-source ~/muverse-audio/.venv/bin/activate
-cd /mnt/c/Users/NatNuay/Downloads/my-app-personal
+cd /mnt/c/Users/NatNuay/Downloads/my-app-personal/services/audio-analysis
+source .venv/bin/activate
+python -m pip install -r requirements-fast.txt
+cd ../..
 python services/audio-analysis/server.py
 ```
 
@@ -43,13 +45,33 @@ Invoke-RestMethod http://127.0.0.1:8765/health
 ไม่จำเป็นต้องลงชุดโมเดลหนัก:
 
 ```bash
+cd services/audio-analysis
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r services/audio-analysis/requirements-fast.txt
+python -m pip install -r requirements-fast.txt
+cd ../..
 python services/audio-analysis/server.py
 ```
 
-## ขั้นตอนและเป้าหมายความเร็ว
+## แผนผัง formation จากทั้งคลิป
+
+ปุ่ม **วิเคราะห์แถวทั้งคลิป** ส่งงานให้ worker ในเครื่องผ่าน `AUDIO_ANALYSIS_URL`
+แล้วปล่อยให้ YouTube เล่นต่อได้ทันที งานแยกจาก UI จึงไม่หยุดคลิปหรือแชร์หน้าจอ
+worker โหลดวิดีโอความละเอียดไม่เกิน 360p ชั่วคราว สกัดภาพประมาณ 1 เฟรมต่อวินาที
+ใช้ MediaPipe PoseLandmarker ตรวจหลายคนและยึดจุดข้อเท้า/เท้าเป็นตำแหน่งอ้างอิง
+เก็บเฉพาะรูปแบบที่ตรวจพบต่อเนื่องหลายภาพ
+เมื่อได้ผล แผนผังจะเปลี่ยนตามเวลาในคลิปและค้างอยู่ตำแหน่งเดิมเมื่อหยุดเล่น
+
+การโหลดวิดีโอและประมวลผลเกิดในเครื่องที่รัน worker (Ubuntu/WSL) ไฟล์วิดีโอและภาพตัวอย่าง
+อยู่ในโฟลเดอร์ชั่วคราวและลบทิ้งหลังงานเสร็จ แคชเก็บเฉพาะไทม์ไลน์ตำแหน่ง 30 วัน
+การประมวลผลทำงานเบื้องหลังและจำกัดเธรด CPU ไว้ไม่เกิน 2 เพื่อให้หน้าเล่นตอบสนองได้
+ผลครั้งแรกอาจใช้เวลาเกิน 30 วินาทีตามความเร็วเน็ต/เครื่อง แต่ไม่ควรทำให้คลิปเล่นสะดุด
+ถ้า YouTube บล็อกการดาวน์โหลด ระบบจะแสดงข้อผิดพลาดแทนผลแถว
+
+ติดตั้ง `mediapipe==1.2.2` เพิ่มจากชุดเดิมและดาวน์โหลดโมเดล PoseLandmarker ครั้งแรก
+ต้องมี FFmpeg และ worker ต้องเปิดค้างเหมือนบริการวิเคราะห์เสียง
+
+## ขั้นตอนและเป้าหมายความเร็วของเสียง
 
 1. yt-dlp ดึง audio stream ของคลิปเดิมลงไฟล์ชั่วคราว โดย fast ไม่สร้าง WAV เพิ่ม
 2. FFmpeg ถอดรหัสเป็น mono 8 kHz ในหน่วยความจำ เฉพาะเพื่อวิเคราะห์ ไม่เปลี่ยนเสียงตัวเล่น
