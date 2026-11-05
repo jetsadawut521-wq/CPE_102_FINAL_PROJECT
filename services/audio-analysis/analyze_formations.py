@@ -8,7 +8,7 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
-POSE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+PERSON_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/float32/1/efficientdet_lite2.tflite"
 MAX_DURATION = 900
 SAMPLE_FPS = 1
 
@@ -17,13 +17,13 @@ def set_stage(root, stage):
     (root / "stage").write_text(stage)
 
 
-def pose_model():
+def person_model():
     root = Path(os.environ.get("FORMATION_MODEL_CACHE", str(Path.home() / ".cache" / "muverse-audio" / "models")))
     root.mkdir(parents=True, exist_ok=True)
-    model = root / "pose_landmarker_lite.task"
+    model = root / "efficientdet_lite2.tflite"
     if not model.exists():
         temporary = model.with_suffix(".download")
-        with urllib.request.urlopen(POSE_MODEL_URL, timeout=30) as response, temporary.open("wb") as destination:
+        with urllib.request.urlopen(PERSON_MODEL_URL, timeout=30) as response, temporary.open("wb") as destination:
             shutil.copyfileobj(response, destination)
         temporary.replace(model)
     return model
@@ -33,9 +33,10 @@ def detector_frames(video_id, root):
     set_stage(root, "downloading")
     output = root / "clip.%(ext)s"
     command = [sys.executable, "-m", "yt_dlp", "--no-playlist", "--no-progress", "--no-warnings",
-               "--ignore-config", "--socket-timeout", "15", "--retries", "1", "--fragment-retries", "1",
+               "--ignore-config", *( ["--js-runtimes", "node"] if shutil.which("node") else [] ),
+               "--socket-timeout", "15", "--retries", "1", "--extractor-retries", "1", "--fragment-retries", "1",
                "--max-filesize", "150M", "--match-filter", f"duration > 0 & duration <= {MAX_DURATION} & !is_live",
-               "-f", "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best",
+               "-f", "bestvideo[height<=360]+bestaudio/best[height<=360]/best",
                "-o", str(output), f"https://www.youtube.com/watch?v={video_id}"]
     subprocess.run(command, check=True, stdout=subprocess.DEVNULL, timeout=180)
     videos = [path for path in root.glob("clip.*") if path.suffix not in (".part", ".ytdl", ".download")]
@@ -78,33 +79,60 @@ def collect_detections(paths, root):
     import numpy as np
     from PIL import Image
 
-    model = pose_model()
-    options = mp.tasks.vision.PoseLandmarkerOptions(
+    model = person_model()
+    options = mp.tasks.vision.ObjectDetectorOptions(
         base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
         running_mode=mp.tasks.vision.RunningMode.IMAGE,
-        num_poses=12,
-        min_pose_detection_confidence=0.45,
-        min_pose_presence_confidence=0.45,
-        min_tracking_confidence=0.45,
+        max_results=16,
+        # Dancers in wide practice-room shots can be small or partly occluded.
+        # Keep lower-confidence person boxes, then reject implausibly small boxes
+        # below before they affect the group-size estimate.
+        score_threshold=0.2,
+        category_allowlist=["person"],
     )
     samples = []
-    with mp.tasks.vision.PoseLandmarker.create_from_options(options) as detector:
+    with mp.tasks.vision.ObjectDetector.create_from_options(options) as detector:
         for index, path in enumerate(paths):
             with Image.open(path) as image:
                 rgb = np.asarray(image.convert("RGB"))
+            height, width = rgb.shape[:2]
             result = detector.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
-            detections = []
-            for landmarks in result.pose_landmarks:
-                # Use visible ankle keypoints as the dancer's floor anchor.
-                # Bounding-box edges and swinging toes drift during dance moves.
-                feet = [landmarks[i] for i in (27, 28)
-                        if i < len(landmarks) and (getattr(landmarks[i], "visibility", 0) or 0) >= 0.35
-                        and 0 <= landmarks[i].x <= 1 and 0 <= landmarks[i].y <= 1]
-                if not feet:
+            candidates = []
+            for detection in result.detections:
+                category = detection.categories[0] if detection.categories else None
+                box = detection.bounding_box
+                if not category or (category.category_name or "").lower() != "person" or not box:
                     continue
-                detections.append({"x": max(0.02, min(0.98, sum(point.x for point in feet) / len(feet))),
-                                   "y": max(0.04, min(0.96, sum(point.y for point in feet) / len(feet)))})
+                left = max(0, box.origin_x) / width
+                top = max(0, box.origin_y) / height
+                right = min(width, box.origin_x + box.width) / width
+                bottom = min(height, box.origin_y + box.height) / height
+                if right <= left or bottom <= top:
+                    continue
+                box_width = right - left
+                box_height = bottom - top
+                if box_height < 0.12 or box_width < 0.025:
+                    continue
+                candidates.append({"x": (left + right) / 2, "y": top + (bottom - top) * 0.92,
+                                   "score": category.score, "box": (left, top, right, bottom)})
+            candidates.sort(key=lambda point: point["score"], reverse=True)
+            detections = []
+            for candidate in candidates:
+                duplicate = False
+                for accepted in detections:
+                    a = candidate["box"]
+                    b = accepted["box"]
+                    intersection = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+                    area_a = (a[2] - a[0]) * (a[3] - a[1])
+                    area_b = (b[2] - b[0]) * (b[3] - b[1])
+                    iou = intersection / max(area_a + area_b - intersection, 1e-8)
+                    if iou > 0.65:
+                        duplicate = True
+                        break
+                if not duplicate:
+                    detections.append(candidate)
             detections.sort(key=lambda point: point["x"])
+            detections = [{"x": point["x"], "y": point["y"]} for point in detections]
             samples.append({"time": index / SAMPLE_FPS, "points": detections})
     return samples
 
@@ -114,13 +142,22 @@ def build_timeline(samples):
     # only after three successive samples agree on dancer count and geometry.
     if not samples:
         return []
-    counts = Counter(len(sample["points"]) for sample in samples if len(sample["points"]) >= 2)
+    frame_counts = [len(sample["points"]) for sample in samples]
+    counts = Counter(count for count in frame_counts if count >= 2)
     if not counts:
         return []
-    # A practice group normally has a fixed roster. Use the most frequently
-    # detected group size for the whole clip so a brief occlusion cannot add or
-    # remove dots from the map.
-    target_count = max(counts, key=lambda count: (counts[count], count))
+    # Prefer the largest count that is repeatedly supported in nearby samples.
+    # A clip-wide mode systematically undercounts when a dancer is often hidden
+    # behind another dancer; requiring 3 detections within a 5-second window
+    # avoids letting a one-frame false positive increase the roster.
+    supported_counts = set()
+    for start in range(max(1, len(frame_counts) - 4)):
+        window = frame_counts[start:start + 5]
+        window_counts = Counter(count for count in window if count >= 2)
+        supported_counts.update(count for count, frequency in window_counts.items() if frequency >= 3)
+    target_count = max(supported_counts) if supported_counts else max(counts, key=lambda count: (counts[count], count))
+    print(json.dumps({"formation_counts": dict(sorted(counts.items())),
+                      "persistent_counts": sorted(supported_counts), "selected_count": target_count}), file=sys.stderr, flush=True)
     layouts = []
     current = None
     candidate = []
@@ -167,6 +204,7 @@ def analyze(video_id, root):
 
 if __name__ == "__main__":
     import re
+    import traceback
     if len(sys.argv) != 3 or not re.fullmatch(r"[A-Za-z0-9_-]{11}", sys.argv[1]):
         raise SystemExit("Invalid video ID")
     root = Path(sys.argv[2])
@@ -184,5 +222,6 @@ if __name__ == "__main__":
         reason = "dependency-missing" if isinstance(error, (ImportError, ModuleNotFoundError)) else "analysis-failed"
         if str(error) in ("download-rejected", "tool-missing"):
             reason = str(error)
+        traceback.print_exc(file=sys.stderr)
         print(json.dumps({"error": reason, "stage": stage}))
         raise SystemExit(1)

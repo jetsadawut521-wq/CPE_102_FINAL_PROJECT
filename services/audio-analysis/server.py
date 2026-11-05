@@ -99,7 +99,8 @@ def read_cache(video_id):
 
 
 def formation_cache_path(video_id):
-    return CACHE_DIR / f"formation-v1-{video_id}.json"
+    # Keep results from the previous count-selection algorithm out of the new one.
+    return CACHE_DIR / f"formation-v2-{video_id}.json"
 
 
 def read_formation_cache(video_id):
@@ -184,6 +185,16 @@ def run_formation_job(video_id):
         job = {"status": "failed", "reason": reason, "stage": read_stage(Path(tempdir.name)) or "unknown"}
     finally:
         if errors is not None:
+            errors.seek(max(0, errors.seek(0, 2) - 4096))
+            tail = errors.read().decode("utf-8", errors="replace")
+            if job.get("status") == "failed":
+                tail = re.sub(r"https?://\S+", "<url>", tail)
+                for line in tail.splitlines()[-6:]:
+                    print(f"[formation-error] {video_id}: {line[:500]}", flush=True)
+            else:
+                for line in tail.splitlines():
+                    if '"formation_counts"' in line:
+                        print(f"[formation] {video_id}: detector {line[:500]}", flush=True)
             errors.close()
         tempdir.cleanup()
     with LOCK:
@@ -400,7 +411,8 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             now = time.time()
             for key, job in list(FORMATION_JOBS.items()):
-                if job["status"] in ("ready", "failed") and now - job["updated"] > FORMATION_CACHE_TTL:
+                ttl = 15 if job["status"] == "failed" else FORMATION_CACHE_TTL
+                if job["status"] in ("ready", "failed") and now - job["updated"] > ttl:
                     del FORMATION_JOBS[key]
             if video_id not in FORMATION_JOBS:
                 cached = read_formation_cache(video_id)
