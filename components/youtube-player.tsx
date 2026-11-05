@@ -63,16 +63,34 @@ function isTextEntry(el: EventTarget | null): boolean {
 type FlashState = { text: string; pos: "left" | "right" | "center" };
 type FormationPoint = { x: number; y: number; color: string };
 type FormationTrack = { id: number; x: number; y: number; missed: number };
+type FormationDetection = { x: number; y: number; score: number; box: { left: number; top: number; right: number; bottom: number } };
 const FORMATION_COLORS = ["#ffe600", "#ff5b9a", "#4de1ff", "#a78bfa", "#ff9f43", "#68e39a"];
 
-function updateFormationTracks(detections: { x: number; y: number }[], tracks: FormationTrack[], nextId: { current: number }): FormationPoint[] {
+function suppressDuplicateDetections(detections: FormationDetection[]): FormationDetection[] {
+  const accepted: FormationDetection[] = [];
+  for (const detection of detections.sort((a, b) => b.score - a.score)) {
+    const duplicate = accepted.some((other) => {
+      const width = Math.max(0, Math.min(detection.box.right, other.box.right) - Math.max(detection.box.left, other.box.left));
+      const height = Math.max(0, Math.min(detection.box.bottom, other.box.bottom) - Math.max(detection.box.top, other.box.top));
+      const intersection = width * height;
+      const areaA = (detection.box.right - detection.box.left) * (detection.box.bottom - detection.box.top);
+      const areaB = (other.box.right - other.box.left) * (other.box.bottom - other.box.top);
+      const overlap = intersection / Math.max(areaA + areaB - intersection, 1);
+      return overlap > 0.65 || Math.hypot(detection.x - other.x, detection.y - other.y) < 0.055;
+    });
+    if (!duplicate) accepted.push(detection);
+  }
+  return accepted;
+}
+
+function updateFormationTracks(detections: FormationDetection[], tracks: FormationTrack[], nextId: { current: number }): FormationPoint[] {
   for (const track of tracks) track.missed++;
   const claimed = new Set<number>();
   for (const detection of detections) {
     let nearest: FormationTrack | undefined;
-    let nearestDistance = 0.2;
+    let nearestDistance = 0.28;
     for (const track of tracks) {
-      if (track.missed > 6 || claimed.has(track.id)) continue;
+      if (track.missed > 4 || claimed.has(track.id)) continue;
       const distance = Math.hypot(track.x - detection.x, track.y - detection.y);
       if (distance < nearestDistance) {
         nearest = track;
@@ -85,12 +103,14 @@ function updateFormationTracks(detections: { x: number; y: number }[], tracks: F
       nearest.missed = 0;
       claimed.add(nearest.id);
     } else {
+      const duplicateTrack = tracks.some((track) => claimed.has(track.id) && Math.hypot(track.x - detection.x, track.y - detection.y) < 0.07);
+      if (duplicateTrack) continue;
       tracks.push({ id: nextId.current++, x: detection.x, y: detection.y, missed: 0 });
       claimed.add(tracks[tracks.length - 1].id);
     }
   }
   for (let i = tracks.length - 1; i >= 0; i--) {
-    if (tracks[i].missed > 6) tracks.splice(i, 1);
+    if (tracks[i].missed > 4) tracks.splice(i, 1);
   }
   return tracks
     .slice()
@@ -721,7 +741,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
         },
         runningMode: "VIDEO",
         maxResults: 12,
-        scoreThreshold: 0.25,
+        scoreThreshold: 0.4,
         categoryAllowlist: ["person"],
       } as const;
       let detector: ObjectDetector;
@@ -776,17 +796,24 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
         context.drawImage(source, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
         try {
           const result = objectDetector.detectForVideo(canvas, Math.round(now));
-          const candidates = result.detections.flatMap((detection) => {
-            const isPerson = detection.categories?.some((category) =>
+          const rawCandidates = result.detections.flatMap((detection) => {
+            const person = detection.categories?.find((category) =>
               category.categoryName?.toLowerCase() === "person" || category.index === 0,
             );
             const box = detection.boundingBox;
-            if (!isPerson || !box) return [];
+            if (!person || !box) return [];
+            const left = box.originX / canvas.width;
+            const top = box.originY / canvas.height;
+            const right = (box.originX + box.width) / canvas.width;
+            const bottom = (box.originY + box.height) / canvas.height;
             return [{
-              x: (box.originX + box.width / 2) / canvas.width,
-              y: (box.originY + box.height) / canvas.height,
+              x: (left + right) / 2,
+              y: bottom,
+              score: person.score ?? 0,
+              box: { left, top, right, bottom },
             }];
-          }).sort((a, b) => a.x - b.x);
+          });
+          const candidates = suppressDuplicateDetections(rawCandidates).sort((a, b) => a.x - b.x);
           const points = updateFormationTracks(candidates, formationTracksRef.current, nextFormationTrackIdRef);
           if (points.length < 2) {
             setFormationMessage("ต้องเห็นนักเต้นอย่างน้อย 2 คนเพื่ออ่านการแปรแถว");
