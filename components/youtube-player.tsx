@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { YT_STATE, formatTime, loadYouTubeApi, type YTEvent, type YTPlayer } from "@/lib/youtube";
 import type { AutoSegment } from "@/lib/highlight-analysis";
+import type { PoseLandmarker } from "@mediapipe/tasks-vision";
 import "./youtube-player.css";
 
 interface Props {
@@ -60,6 +61,8 @@ function isTextEntry(el: EventTarget | null): boolean {
 }
 
 type FlashState = { text: string; pos: "left" | "right" | "center" };
+type FormationPoint = { x: number; y: number; color: string };
+const FORMATION_COLORS = ["#ffe600", "#ff5b9a", "#4de1ff", "#a78bfa", "#ff9f43", "#68e39a"];
 
 export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onError, loopOne = false, highlights = NO_HIGHLIGHTS }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -102,6 +105,14 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const [menuOpen, setMenuOpen] = useState(false);
   const [idle, setIdle] = useState(false);
   const idleTimer = useRef<number | undefined>(undefined);
+  const captureRef = useRef<MediaStream | null>(null);
+  const captureVideoRef = useRef<HTMLVideoElement | null>(null);
+  const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
+  const formationFrameRef = useRef<number | null>(null);
+  const lastFormationFrameRef = useRef(0);
+  const [formationStatus, setFormationStatus] = useState<"off" | "loading" | "running" | "error">("off");
+  const [formationError, setFormationError] = useState<string | null>(null);
+  const [formationPoints, setFormationPoints] = useState<FormationPoint[]>([]);
 
   useEffect(() => {
     onEndedRef.current = onEnded;
@@ -533,6 +544,129 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     setSeeking(false);
   };
 
+  const stopFormationAnalysis = useCallback(() => {
+    if (formationFrameRef.current !== null) cancelAnimationFrame(formationFrameRef.current);
+    formationFrameRef.current = null;
+    captureRef.current?.getTracks().forEach((track) => track.stop());
+    captureRef.current = null;
+    if (captureVideoRef.current) captureVideoRef.current.srcObject = null;
+    captureVideoRef.current = null;
+    poseLandmarkerRef.current?.close();
+    poseLandmarkerRef.current = null;
+    setFormationPoints([]);
+    setFormationStatus("off");
+  }, []);
+
+  const startFormationAnalysis = useCallback(async () => {
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setFormationError("เบราว์เซอร์นี้ไม่รองรับการแชร์แท็บ");
+      setFormationStatus("error");
+      return;
+    }
+    setFormationError(null);
+    setFormationStatus("loading");
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 12, max: 15 } },
+        audio: false,
+      });
+      captureRef.current = stream;
+      const screenTrack = stream.getVideoTracks()[0];
+      screenTrack?.addEventListener("ended", stopFormationAnalysis, { once: true });
+      const captureVideo = document.createElement("video");
+      captureVideo.muted = true;
+      captureVideo.playsInline = true;
+      captureVideo.srcObject = stream;
+      captureVideoRef.current = captureVideo;
+      await captureVideo.play();
+
+      const { FilesetResolver, PoseLandmarker: PoseLandmarkerFactory } = await import("@mediapipe/tasks-vision");
+      const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.2/wasm");
+      const options = {
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+        },
+        runningMode: "VIDEO",
+        numPoses: 12,
+        minPoseDetectionConfidence: 0.45,
+        minPosePresenceConfidence: 0.45,
+        minTrackingConfidence: 0.45,
+      } as const;
+      let landmarker: PoseLandmarker;
+      try {
+        landmarker = await PoseLandmarkerFactory.createFromOptions(vision, {
+          ...options,
+          baseOptions: { ...options.baseOptions, delegate: "GPU" },
+        });
+      } catch {
+        landmarker = await PoseLandmarkerFactory.createFromOptions(vision, {
+          ...options,
+          baseOptions: { ...options.baseOptions, delegate: "CPU" },
+        });
+      }
+      if (screenTrack && screenTrack.readyState !== "live") {
+        landmarker.close();
+        stopFormationAnalysis();
+        return;
+      }
+      poseLandmarkerRef.current = landmarker;
+      setFormationStatus("running");
+
+      const canvas = document.createElement("canvas");
+      canvas.width = 640;
+      canvas.height = 360;
+      const context = canvas.getContext("2d", { alpha: false });
+      const analyzeFrame = (now: number) => {
+        formationFrameRef.current = requestAnimationFrame(analyzeFrame);
+        if (now - lastFormationFrameRef.current < 120) return;
+        lastFormationFrameRef.current = now;
+        const source = captureVideoRef.current;
+        const stage = rootRef.current?.querySelector<HTMLElement>(".yp-stage");
+        const detector = poseLandmarkerRef.current;
+        if (!source || !stage || !detector || !context || source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+        const rect = stage.getBoundingClientRect();
+        const scaleX = source.videoWidth / window.innerWidth;
+        const scaleY = source.videoHeight / window.innerHeight;
+        const sx = Math.max(0, rect.left * scaleX);
+        const sy = Math.max(0, rect.top * scaleY);
+        const sw = Math.min(source.videoWidth - sx, rect.width * scaleX);
+        const sh = Math.min(source.videoHeight - sy, rect.height * scaleY);
+        if (sw <= 0 || sh <= 0) return;
+        context.drawImage(source, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+        try {
+          const result = detector.detectForVideo(canvas, Math.round(now));
+          const candidates = result.landmarks.flatMap((pose) => {
+            const shoulderL = pose[11];
+            const shoulderR = pose[12];
+            const hipL = pose[23];
+            const hipR = pose[24];
+            if (!shoulderL || !shoulderR || !hipL || !hipR) return [];
+            const visible = [shoulderL, shoulderR, hipL, hipR].filter((p) => (p.visibility ?? 1) >= 0.25);
+            if (visible.length < 2) return [];
+            return [{
+              x: visible.reduce((sum, p) => sum + p.x, 0) / visible.length,
+              y: visible.reduce((sum, p) => sum + p.y, 0) / visible.length,
+            }];
+          }).sort((a, b) => a.x - b.x);
+          setFormationPoints(candidates.map((point, index) => ({
+            ...point,
+            color: FORMATION_COLORS[index % FORMATION_COLORS.length],
+          })));
+        } catch {
+          // เฟรมที่เบราว์เซอร์กำลังเปลี่ยนขนาดหรือแชร์ไม่ทัน ข้ามเฟรมนั้นแล้วลองต่อ
+        }
+      };
+      formationFrameRef.current = requestAnimationFrame(analyzeFrame);
+    } catch (error) {
+      stopFormationAnalysis();
+      if (error instanceof DOMException && error.name === "NotAllowedError") return;
+      setFormationError(error instanceof Error ? error.message : "เริ่มวิเคราะห์ตำแหน่งนักเต้นไม่สำเร็จ");
+      setFormationStatus("error");
+    }
+  }, [stopFormationAnalysis]);
+
+  useEffect(() => () => stopFormationAnalysis(), [stopFormationAnalysis]);
+
   const settings = (
     <>
           <label>
@@ -606,6 +740,16 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
           {flash && <span className={`yp-flash yp-flash--${flash.pos}`}>{flash.text}</span>}
         </div>
 
+        <div className="yp-formation-overlay" aria-hidden="true">
+          {formationPoints.map((point, index) => (
+            <span
+              key={index}
+              className="yp-formation-dot"
+              style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%`, color: point.color, background: point.color }}
+            />
+          ))}
+        </div>
+
         {/* ปุ่มเต็มจอ: จางๆ มุมขวาล่างของจอ ชัดขึ้นเมื่อเอาเมาส์ไปจ่อ (อยู่นอก yp-frame จึงไม่ถูกกลับด้าน) */}
         <button
           type="button"
@@ -653,6 +797,24 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
           </div>
         )}
       </div>
+
+      {!isFullscreen && (
+        <div className="yp-formation-tools">
+          <button
+            type="button"
+            disabled={formationStatus === "loading"}
+            onClick={formationStatus === "running" ? stopFormationAnalysis : startFormationAnalysis}
+          >
+            {formationStatus === "loading" ? "กำลังเริ่มวิเคราะห์…" : formationStatus === "running" ? "หยุดติดตามตำแหน่ง" : "แสดงตำแหน่งนักเต้น"}
+          </button>
+          <small>
+            {formationStatus === "running"
+              ? `กำลังติดตาม ${formationPoints.length} คน · ประมวลผลในเครื่อง`
+              : "เมื่อระบบถาม ให้เลือกแชร์ Chrome Tab หน้านี้ · ภาพไม่ถูกส่งไปเซิร์ฟเวอร์"}
+          </small>
+          {formationError && <small className="yp-formation-error" role="status">วิเคราะห์ตำแหน่งไม่ได้: {formationError}</small>}
+        </div>
+      )}
 
       <div className="yp-controls">
         <div className="yp-seek">
