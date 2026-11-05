@@ -36,7 +36,7 @@ def detector_frames(video_id, root):
                "--ignore-config", *( ["--js-runtimes", "node"] if shutil.which("node") else [] ),
                "--socket-timeout", "15", "--retries", "1", "--extractor-retries", "1", "--fragment-retries", "1",
                "--max-filesize", "150M", "--match-filter", f"duration > 0 & duration <= {MAX_DURATION} & !is_live",
-               "-f", "best[height<=360][ext=mp4]/best[height<=360]/best[ext=mp4]/best",
+               "-f", "bestvideo[height<=360]+bestaudio/best[height<=360]/best",
                "-o", str(output), f"https://www.youtube.com/watch?v={video_id}"]
     subprocess.run(command, check=True, stdout=subprocess.DEVNULL, timeout=180)
     videos = [path for path in root.glob("clip.*") if path.suffix not in (".part", ".ytdl", ".download")]
