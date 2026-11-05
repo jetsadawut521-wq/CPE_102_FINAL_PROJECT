@@ -62,7 +62,41 @@ function isTextEntry(el: EventTarget | null): boolean {
 
 type FlashState = { text: string; pos: "left" | "right" | "center" };
 type FormationPoint = { x: number; y: number; color: string };
+type FormationTrack = { id: number; x: number; y: number; missed: number };
 const FORMATION_COLORS = ["#ffe600", "#ff5b9a", "#4de1ff", "#a78bfa", "#ff9f43", "#68e39a"];
+
+function updateFormationTracks(detections: { x: number; y: number }[], tracks: FormationTrack[], nextId: { current: number }): FormationPoint[] {
+  for (const track of tracks) track.missed++;
+  const claimed = new Set<number>();
+  for (const detection of detections) {
+    let nearest: FormationTrack | undefined;
+    let nearestDistance = 0.2;
+    for (const track of tracks) {
+      if (track.missed > 6 || claimed.has(track.id)) continue;
+      const distance = Math.hypot(track.x - detection.x, track.y - detection.y);
+      if (distance < nearestDistance) {
+        nearest = track;
+        nearestDistance = distance;
+      }
+    }
+    if (nearest) {
+      nearest.x = detection.x;
+      nearest.y = detection.y;
+      nearest.missed = 0;
+      claimed.add(nearest.id);
+    } else {
+      tracks.push({ id: nextId.current++, x: detection.x, y: detection.y, missed: 0 });
+      claimed.add(tracks[tracks.length - 1].id);
+    }
+  }
+  for (let i = tracks.length - 1; i >= 0; i--) {
+    if (tracks[i].missed > 6) tracks.splice(i, 1);
+  }
+  return tracks
+    .slice()
+    .sort((a, b) => a.x - b.x)
+    .map((track) => ({ x: track.x, y: track.y, color: FORMATION_COLORS[track.id % FORMATION_COLORS.length] }));
+}
 
 type FormationSignature = { distances: number[]; centerX: number; centerY: number; spread: number; covariance: [number, number, number] };
 function getFormationSignature(points: FormationPoint[]): FormationSignature {
@@ -160,6 +194,9 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
   const formationFrameRef = useRef<number | null>(null);
   const lastFormationFrameRef = useRef(0);
+  const lastFormationVideoTimeRef = useRef<number | null>(null);
+  const formationTracksRef = useRef<FormationTrack[]>([]);
+  const nextFormationTrackIdRef = useRef(0);
   const [formationStatus, setFormationStatus] = useState<"off" | "loading" | "running" | "error">("off");
   const [formationError, setFormationError] = useState<string | null>(null);
   const [formationPoints, setFormationPoints] = useState<FormationPoint[]>([]);
@@ -192,6 +229,20 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     loopHlRef.current = false;
     setLoopHl(false);
   }, [videoId, highlights]);
+
+  useEffect(() => {
+    setFormationPoints([]);
+    formationTracksRef.current = [];
+    nextFormationTrackIdRef.current = 0;
+    lastFormationVideoTimeRef.current = null;
+    formationMemoryRef.current = {
+      baseline: null,
+      candidateSince: null,
+      candidateSignature: null,
+      candidateFrames: [],
+    };
+    setFormationMessage("กำลังหาตำแหน่งตั้งต้นของแถว…");
+  }, [videoId]);
 
   const showFlash = useCallback((text: string, pos: FlashState["pos"]) => {
     setFlash({ text, pos });
@@ -609,6 +660,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const stopFormationAnalysis = useCallback(() => {
     if (formationFrameRef.current !== null) cancelAnimationFrame(formationFrameRef.current);
     formationFrameRef.current = null;
+    lastFormationVideoTimeRef.current = null;
     captureRef.current?.getTracks().forEach((track) => track.stop());
     captureRef.current = null;
     if (captureVideoRef.current) captureVideoRef.current.srcObject = null;
@@ -616,6 +668,8 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     poseLandmarkerRef.current?.close();
     poseLandmarkerRef.current = null;
     setFormationPoints([]);
+    formationTracksRef.current = [];
+    nextFormationTrackIdRef.current = 0;
     formationMemoryRef.current = {
       baseline: null,
       candidateSince: null,
@@ -634,6 +688,8 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     }
     setFormationError(null);
     setFormationPoints([]);
+    formationTracksRef.current = [];
+    nextFormationTrackIdRef.current = 0;
     formationMemoryRef.current = {
       baseline: null,
       candidateSince: null,
@@ -661,13 +717,13 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
       const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.2/wasm");
       const options = {
         baseOptions: {
-          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
         },
         runningMode: "VIDEO",
-        numPoses: 12,
-        minPoseDetectionConfidence: 0.45,
-        minPosePresenceConfidence: 0.45,
-        minTrackingConfidence: 0.45,
+        numPoses: 8,
+        minPoseDetectionConfidence: 0.3,
+        minPosePresenceConfidence: 0.3,
+        minTrackingConfidence: 0.3,
       } as const;
       let landmarker: PoseLandmarker;
       try {
@@ -690,8 +746,8 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
       setFormationStatus("running");
 
       const canvas = document.createElement("canvas");
-      canvas.width = 640;
-      canvas.height = 360;
+      canvas.width = 960;
+      canvas.height = 540;
       const context = canvas.getContext("2d", { alpha: false });
       const analyzeFrame = (now: number) => {
         formationFrameRef.current = requestAnimationFrame(analyzeFrame);
@@ -700,7 +756,16 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
         const source = captureVideoRef.current;
         const stage = rootRef.current?.querySelector<HTMLElement>(".yp-stage");
         const detector = poseLandmarkerRef.current;
-        if (!source || !stage || !detector || !context || source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+        const player = playerRef.current;
+        if (!source || !stage || !detector || !context || !player || source.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+        const videoTime = safe(player.getCurrentTime());
+        if (lastFormationVideoTimeRef.current !== null && videoTime + 0.1 < lastFormationVideoTimeRef.current) {
+          lastFormationVideoTimeRef.current = null;
+        }
+        if (lastFormationVideoTimeRef.current !== null) {
+          if (!playingRef.current || videoTime <= lastFormationVideoTimeRef.current + 0.015) return;
+        }
+        lastFormationVideoTimeRef.current = videoTime;
         const rect = stage.getBoundingClientRect();
         const scaleX = source.videoWidth / window.innerWidth;
         const scaleY = source.videoHeight / window.innerHeight;
@@ -718,17 +783,14 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
             const hipL = pose[23];
             const hipR = pose[24];
             if (!shoulderL || !shoulderR || !hipL || !hipR) return [];
-            const visible = [shoulderL, shoulderR, hipL, hipR].filter((p) => (p.visibility ?? 1) >= 0.25);
+            const visible = [shoulderL, shoulderR, hipL, hipR].filter((p) => (p.visibility ?? 1) >= 0.15);
             if (visible.length < 2) return [];
             return [{
               x: visible.reduce((sum, p) => sum + p.x, 0) / visible.length,
               y: visible.reduce((sum, p) => sum + p.y, 0) / visible.length,
             }];
           }).sort((a, b) => a.x - b.x);
-          const points = candidates.map((point, index) => ({
-            ...point,
-            color: FORMATION_COLORS[index % FORMATION_COLORS.length],
-          }));
+          const points = updateFormationTracks(candidates, formationTracksRef.current, nextFormationTrackIdRef);
           if (points.length < 2) {
             setFormationMessage("ต้องเห็นนักเต้นอย่างน้อย 2 คนเพื่ออ่านการแปรแถว");
             return;
@@ -758,7 +820,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
             memory.candidateFrames.push(points);
             if (memory.candidateFrames.length > 10) memory.candidateFrames.shift();
           }
-          if (memory.candidateSince !== null && now - memory.candidateSince >= 1450) {
+          if (memory.candidateSince !== null && now - memory.candidateSince >= 650) {
             setFormationPoints(averageFormationPoints(memory.candidateFrames));
             memory.baseline = signature;
             memory.candidateSince = null;
@@ -932,7 +994,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
           </button>
           <small>
             {formationStatus === "running"
-              ? "จุดจะแสดงแถวที่ตรวจพบ และขยับเมื่อรูปแบบเปลี่ยนต่อเนื่อง · ประมวลผลในเครื่อง"
+              ? "แผนผังจะค้างเมื่อคลิปหยุด และเปลี่ยนเมื่อรูปแบบแถวเปลี่ยนต่อเนื่อง · ประมวลผลในเครื่อง"
               : "เมื่อระบบถาม ให้เลือกแชร์ Chrome Tab หน้านี้ · ภาพไม่ถูกส่งไปเซิร์ฟเวอร์"}
           </small>
           {formationError && <small className="yp-formation-error" role="status">วิเคราะห์ตำแหน่งไม่ได้: {formationError}</small>}
