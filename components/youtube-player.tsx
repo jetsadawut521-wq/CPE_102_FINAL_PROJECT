@@ -808,7 +808,9 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
             const bottom = (box.originY + box.height) / canvas.height;
             return [{
               x: (left + right) / 2,
-              y: bottom,
+              // Use a lower-body anchor rather than the detector box's bottom edge,
+              // which can extend to the edge of wide-angle practice-room frames.
+              y: top + (bottom - top) * 0.82,
               score: person.score ?? 0,
               box: { left, top, right, bottom },
             }];
@@ -989,7 +991,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
 
         {["loading", "running"].includes(formationStatus) && (
           <aside className="yp-formation-map" aria-label="แผนผังแถว">
-            <strong>แผนผังตำแหน่งยืน</strong>
+            <strong>แผนผังตำแหน่งยืนโดยประมาณ</strong>
             <div className="yp-formation-map__stage" aria-hidden="true">
               {formationPoints.map((point, index) => (
                 <span
