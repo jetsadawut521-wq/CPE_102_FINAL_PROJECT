@@ -72,6 +72,13 @@ def point_distance(left, right):
     return sum(((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5 for a, b in zip(left, right)) / len(left)
 
 
+def formation_distance(left, right):
+    if len(left) != len(right):
+        return 1.0
+    distances = [((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5 for a, b in zip(left, right)]
+    return 0.5 * (sum(distances) / len(distances)) + 0.5 * max(distances, default=0.0)
+
+
 def average_points(samples):
     size = len(samples[0])
     return [{"x": sum(sample[i]["x"] for sample in samples) / len(samples),
@@ -267,7 +274,7 @@ def build_timeline(samples):
         # sliding reference gradually follows slow formation changes and can
         # absorb them without ever creating a new layout.
         reference = average_points([item["points"] for item in current[:2]])
-        if point_distance(reference, points) <= 0.12:
+        if formation_distance(reference, points) <= 0.1:
             current.append(sample)
             candidate = []
         else:
@@ -290,11 +297,15 @@ def pose_positions(landmarks):
                 if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
         shoulders = [pose[index] for index in (11, 12)
                      if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
+        ankles = [pose[index] for index in (27, 28)
+                  if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
         if not hips:
             continue
         torso_y = [item.y for item in hips + shoulders] if shoulders else [item.y for item in hips]
+        torso_center_y = sum(torso_y) / len(torso_y)
+        vertical = 0.35 * (sum(item.y for item in ankles) / len(ankles)) + 0.65 * torso_center_y if ankles else torso_center_y
         points.append({"x": min(1.0, max(0.0, sum(item.x for item in hips) / len(hips))),
-                       "y": min(1.0, max(0.0, sum(torso_y) / len(torso_y)))})
+                       "y": min(1.0, max(0.0, vertical))})
     return sorted(points, key=lambda point: point["x"])
 
 
