@@ -9,7 +9,6 @@ from collections import Counter
 from pathlib import Path
 
 PERSON_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/float32/1/efficientdet_lite2.tflite"
-POSE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
 MAX_DURATION = 900
 # Two-second spacing roughly halves CPU inference for typical practice clips.
 SAMPLE_FPS = 0.5
@@ -17,6 +16,48 @@ SAMPLE_FPS = 0.5
 
 def set_stage(root, stage):
     (root / "stage").write_text(stage)
+
+
+def stage_projection(corners):
+    """Map four clicked floor corners to a normalized top-down stage plane."""
+    import numpy as np
+
+    source = np.asarray([[point["x"], point["y"]] for point in corners], dtype=float)
+    target = np.asarray([[0.08, 0.08], [0.92, 0.08], [0.92, 0.92], [0.08, 0.92]], dtype=float)
+    # A correctly ordered convex quadrilateral is required; otherwise the
+    # perspective transform can flip or collapse the floor map.
+    edges = np.roll(source, -1, axis=0) - source
+    cross = [edges[i, 0] * edges[(i + 1) % 4, 1] - edges[i, 1] * edges[(i + 1) % 4, 0] for i in range(4)]
+    area = abs(sum(source[i, 0] * source[(i + 1) % 4, 1] - source[(i + 1) % 4, 0] * source[i, 1]
+                   for i in range(4))) * 0.5
+    if area < 0.02 or not (all(value > 1e-5 for value in cross) or all(value < -1e-5 for value in cross)):
+        raise ValueError("invalid-stage-corners")
+    equations = []
+    values = []
+    for (x, y), (u, v) in zip(source, target):
+        equations.append([x, y, 1, 0, 0, 0, -u * x, -u * y])
+        values.append(u)
+        equations.append([0, 0, 0, x, y, 1, -v * x, -v * y])
+        values.append(v)
+    try:
+        matrix = np.linalg.solve(np.asarray(equations), np.asarray(values))
+    except np.linalg.LinAlgError as error:
+        raise ValueError("invalid-stage-corners") from error
+    return np.append(matrix, 1).reshape(3, 3)
+
+
+def project_samples(samples, transform, root):
+    import numpy as np
+
+    set_stage(root, "projecting-floor")
+    for sample in samples:
+        for point in sample["points"]:
+            projected = transform @ np.asarray([point["x"], point["y"], 1.0])
+            if abs(projected[2]) < 1e-8:
+                continue
+            point["x"] = min(1.0, max(0.0, float(projected[0] / projected[2])))
+            point["y"] = min(1.0, max(0.0, float(projected[1] / projected[2])))
+    return samples
 
 
 def cached_model(filename, url):
@@ -290,73 +331,8 @@ def build_timeline(samples):
     return layouts
 
 
-def pose_positions(landmarks):
-    points = []
-    for pose in landmarks:
-        hips = [pose[index] for index in (23, 24)
-                if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
-        ankles = [pose[index] for index in (27, 28)
-                  if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
-        if not hips and not ankles:
-            continue
-        base = ankles or hips
-        points.append({"x": min(1.0, max(0.0, sum(item.x for item in base) / len(base))),
-                       # The lower visible ankle best approximates floor depth;
-                       # averaging also a lifted foot pulls the estimate upward.
-                       "y": min(1.0, max(0.0, max(item.y for item in ankles) if ankles else sum(item.y for item in hips) / len(hips)))} )
-    return sorted(points, key=lambda point: point["x"])
-
-
-def refine_formation_positions(formations, samples, paths, root):
-    if not formations:
-        return formations
-    import mediapipe as mp
-    import numpy as np
-    from PIL import Image
-
-    set_stage(root, "refining-positions")
-    model = cached_model("pose_landmarker_lite.task", POSE_MODEL_URL)
-    options = mp.tasks.vision.PoseLandmarkerOptions(
-        base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
-        running_mode=mp.tasks.vision.RunningMode.IMAGE,
-        num_poses=10,
-        min_pose_detection_confidence=0.3,
-        min_pose_presence_confidence=0.3,
-    )
-    with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
-        for formation in formations:
-            refined = []
-            # Layouts are accepted after a few stable samples. Refine only those
-            # representative frames instead of running pose inference on the clip.
-            for index in formation.pop("sample_indexes", []):
-                with Image.open(paths[index]) as image:
-                    rgb = np.asarray(image.convert("RGB"))
-                result = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
-                points = pose_positions(result.pose_landmarks)
-                observed = [item for item in samples[index].get("assignments", []) if item["observed"]]
-                if len(points) == len(observed) == len(formation["points"]):
-                    from scipy.optimize import linear_sum_assignment
-                    import numpy as np
-                    costs = np.asarray([[(pose["x"] - item["point"]["x"]) ** 2 +
-                                         0.15 * (pose["y"] - item["point"]["y"]) ** 2 for item in observed]
-                                        for pose in points])
-                    rows, columns = linear_sum_assignment(costs)
-                    aligned = [None] * len(formation["points"])
-                    for row, column in zip(rows, columns):
-                        aligned[observed[column]["id"]] = points[row]
-                    if all(point is not None for point in aligned):
-                        refined.append(aligned)
-                else:
-                    print(f"[formation-pose] pose-count-mismatch expected={len(formation['points'])} detected={len(points)} time={formation['time']}",
-                          file=sys.stderr, flush=True)
-                if len(refined) >= 3:
-                    break
-            if refined:
-                formation["points"] = average_points(refined)
-    return formations
-
-
-def analyze(video_id, root):
+def analyze(video_id, root, stage_corners):
+    transform = stage_projection(stage_corners)
     if os.name == "posix":
         try:
             os.nice(10)
@@ -366,36 +342,29 @@ def analyze(video_id, root):
     samples = collect_detections(frames, root)
     target_count = choose_target_count(samples)
     samples = track_people(samples, target_count)
+    # Use the same floor-plane projection approach as GridStage: dancers' foot
+    # locations are transformed using the calibrated four-corner quadrilateral.
+    samples = project_samples(samples, transform, root)
     formations = build_timeline(samples)
-    try:
-        formations = refine_formation_positions(formations, samples, frames, root)
-    except Exception as error:
-        print(f"[formation-pose] optional position refinement skipped: {error}", file=sys.stderr, flush=True)
-        for formation in formations:
-            formation.pop("sample_indexes", None)
-    # Keep floor-depth ordering visible, but compress projected depth toward
-    # the middle of the map so ground-level markers do not hug its lower edge.
     for formation in formations:
-        points = formation["points"]
-        if not points:
-            continue
-        mean_depth = sum(point["y"] for point in points) / len(points)
-        map_center = 0.5 + 0.45 * (mean_depth - 0.5)
-        for point in points:
-            # Preserve the group's centered depth while making staggered rows
-            # distinct enough to read on the compact 16:9 formation map.
-            point["y"] = min(0.9, max(0.1, map_center + 1.1 * (point["y"] - mean_depth)))
-    return {"engine": "formation-v1", "formations": formations}
+        formation.pop("sample_indexes", None)
+    return {"engine": "formation-v2", "formations": formations}
 
 
 if __name__ == "__main__":
     import re
     import traceback
-    if len(sys.argv) != 3 or not re.fullmatch(r"[A-Za-z0-9_-]{11}", sys.argv[1]):
+    if len(sys.argv) != 4 or not re.fullmatch(r"[A-Za-z0-9_-]{11}", sys.argv[1]):
         raise SystemExit("Invalid video ID")
     root = Path(sys.argv[2])
     try:
-        print(json.dumps(analyze(sys.argv[1], root), separators=(",", ":")))
+        corners = json.loads(sys.argv[3])
+        if (not isinstance(corners, list) or len(corners) != 4 or
+            not all(isinstance(point, dict) and isinstance(point.get("x"), (int, float)) and
+                    isinstance(point.get("y"), (int, float)) and
+                    0 <= point["x"] <= 1 and 0 <= point["y"] <= 1 for point in corners)):
+            raise ValueError("invalid-stage-corners")
+        print(json.dumps(analyze(sys.argv[1], root, corners), separators=(",", ":")))
     except subprocess.TimeoutExpired:
         print(json.dumps({"error": "download-timeout" if (root / "stage").read_text().strip() == "downloading" else "decode-failed"}))
         raise SystemExit(1)
@@ -406,7 +375,7 @@ if __name__ == "__main__":
     except Exception as error:
         stage = (root / "stage").read_text().strip() if (root / "stage").exists() else "unknown"
         reason = "dependency-missing" if isinstance(error, (ImportError, ModuleNotFoundError)) else "analysis-failed"
-        if str(error) in ("download-rejected", "tool-missing"):
+        if str(error) in ("download-rejected", "tool-missing", "invalid-stage-corners"):
             reason = str(error)
         traceback.print_exc(file=sys.stderr)
         print(json.dumps({"error": reason, "stage": stage}))

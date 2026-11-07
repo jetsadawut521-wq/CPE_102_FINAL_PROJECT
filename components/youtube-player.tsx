@@ -62,6 +62,7 @@ function isTextEntry(el: EventTarget | null): boolean {
 type FlashState = { text: string; pos: "left" | "right" | "center" };
 type FormationPoint = { x: number; y: number; color: string };
 type FormationSnapshot = { time: number; points: Array<{ x: number; y: number; color: number }> };
+type StageCorner = { x: number; y: number };
 const FORMATION_COLORS = ["#ffe600", "#ff5b9a", "#4de1ff", "#a78bfa", "#ff9f43", "#68e39a", "#ff6b6b", "#5eead4", "#c084fc", "#facc15"];
 
 export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onError, loopOne = false, highlights = NO_HIGHLIGHTS }: Props) {
@@ -111,6 +112,9 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const [formationPoints, setFormationPoints] = useState<FormationPoint[]>([]);
   const [formationTimeline, setFormationTimeline] = useState<FormationSnapshot[]>([]);
   const [formationStage, setFormationStage] = useState<string | null>(null);
+  const [calibrationArmed, setCalibrationArmed] = useState(false);
+  const [calibrationMarks, setCalibrationMarks] = useState<StageCorner[]>([]);
+  const [stageCorners, setStageCorners] = useState<StageCorner[]>([]);
 
   useEffect(() => {
     onEndedRef.current = onEnded;
@@ -135,6 +139,9 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     setFormationStatus("off");
     setFormationStage(null);
     setFormationError(null);
+    setCalibrationArmed(false);
+    setCalibrationMarks([]);
+    setStageCorners([]);
     formationAbortRef.current?.abort();
     formationAbortRef.current = null;
   }, [videoId]);
@@ -537,6 +544,22 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
 
   // แตะครั้งเดียว = เล่น/หยุด, แตะสองครั้ง = ข้าม/ย้อน 10 วิ (ขวา = ข้าม, ซ้าย = ย้อน)
   const handleTap = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (calibrationArmed) {
+      e.preventDefault();
+      const rect = e.currentTarget.getBoundingClientRect();
+      const next = [...calibrationMarks, {
+        x: Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)),
+        y: Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height)),
+      }];
+      setCalibrationMarks(next);
+      if (next.length === 4) {
+        // Convert the visible corner order to the original, unmirrored frame.
+        const ordered = mirrored ? [next[1], next[0], next[3], next[2]] : next;
+        setStageCorners(ordered.map((point) => ({ x: mirrored ? 1 - point.x : point.x, y: point.y })));
+        setCalibrationArmed(false);
+      }
+      return;
+    }
     if (menuOpen) {
       setMenuOpen(false); // แตะที่จอตอนเมนูเปิด = ปิดเมนูอย่างเดียว ไม่สลับเล่น/หยุด
       return;
@@ -572,7 +595,24 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     setFormationStatus("off");
   }, []);
 
+  const beginStageCalibration = useCallback(() => {
+    formationAbortRef.current?.abort();
+    formationAbortRef.current = null;
+    playerRef.current?.pauseVideo();
+    setFormationError(null);
+    setFormationStatus("off");
+    setFormationTimeline([]);
+    setFormationPoints([]);
+    setCalibrationMarks([]);
+    setStageCorners([]);
+    setCalibrationArmed(true);
+  }, []);
+
   const startFormationAnalysis = useCallback(async () => {
+    if (stageCorners.length !== 4) {
+      setFormationError("ตั้งค่ามุมพื้นเวทีให้ครบ 4 จุดก่อน");
+      return;
+    }
     formationAbortRef.current?.abort();
     const controller = new AbortController();
     formationAbortRef.current = controller;
@@ -586,6 +626,8 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
       do {
         const response = await fetch(`/api/youtube/formations?v=${encodeURIComponent(videoId)}`, {
           method: "POST", cache: "no-store", signal: controller.signal,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ stageCorners }),
         });
         result = await response.json();
         if (!response.ok && response.status !== 429) throw new Error("ติดต่อระบบวิเคราะห์คลิปไม่ได้");
@@ -616,6 +658,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
           "decode-failed": "อ่านเฟรมวิดีโอไม่สำเร็จ ตรวจว่าติดตั้ง FFmpeg แล้ว",
           "dependency-missing": "ยังไม่ได้ติดตั้ง MediaPipe สำหรับวิเคราะห์แถว",
           "tool-missing": "ไม่พบ FFmpeg ใน Ubuntu",
+          "invalid-stage-corners": "มุมพื้นเวทีซ้อนกันหรือเรียงผิดลำดับ ลองตั้งค่า 4 มุมใหม่",
         };
         throw new Error(messages[result.reason ?? ""] ?? "วิเคราะห์แถวไม่สำเร็จ");
       }
@@ -627,7 +670,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
       setFormationError(error instanceof Error ? error.message : "วิเคราะห์แถวไม่สำเร็จ");
       setFormationStatus("error");
     }
-  }, [videoId]);
+  }, [stageCorners, videoId]);
 
   useEffect(() => () => stopFormationAnalysis(), [stopFormationAnalysis]);
 
@@ -695,7 +738,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   return (
     <div ref={rootRef} className={`yp-root ${isFullscreen ? "is-fullscreen" : ""} ${isFullscreen && idle ? "is-idle" : ""}`}>
       <div className={`yp-view-layout ${["loading", "running", "ready"].includes(formationStatus) ? "has-formation" : ""}`}>
-        <div className={`yp-stage ${mirrored ? "is-mirrored" : ""}`}>
+        <div className={`yp-stage ${mirrored ? "is-mirrored" : ""} ${calibrationArmed ? "is-calibrating" : ""}`}>
         {/* yp-frame ถูกขยายให้สูงกว่าเวที แล้วตัดส่วนเกินทิ้ง เพื่อซ่อนแถบชื่อคลิปของ YouTube
             (ตัวอักษรนั้นอยู่ใน iframe ข้ามโดเมน จึงกลับด้านเฉพาะตัวอักษรไม่ได้ ต้องซ่อนแทน) */}
         <div className="yp-frame" ref={hostRef} />
@@ -704,6 +747,11 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
         <div className="yp-tap" onPointerUp={handleTap} aria-hidden="true">
           {flash && <span className={`yp-flash yp-flash--${flash.pos}`}>{flash.text}</span>}
         </div>
+        {calibrationMarks.map((point, index) => (
+          <span key={`cal-${index}`} className="yp-calibration-mark" style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}>
+            {index + 1}
+          </span>
+        ))}
 
         {/* ปุ่มเต็มจอ: จางๆ มุมขวาล่างของจอ ชัดขึ้นเมื่อเอาเมาส์ไปจ่อ (อยู่นอก yp-frame จึงไม่ถูกกลับด้าน) */}
         <button
@@ -770,7 +818,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
               {formationStatus === "loading" ? "กำลังเริ่มงานวิเคราะห์… คลิปยังเล่นต่อได้" : formationStatus === "running"
                 ? formationStage === "downloading" ? "กำลังเตรียมวิดีโอ · คลิปเล่นต่อได้ตามปกติ"
                 : formationStage === "extracting-frames" ? "กำลังเลือกภาพตัวอย่างจากคลิป · คลิปเล่นต่อได้ตามปกติ"
-                  : formationStage === "refining-positions" ? "กำลังปรับตำแหน่งจากจุดข้อต่อ · คลิปเล่นต่อได้ตามปกติ"
+                  : formationStage === "projecting-floor" ? "กำลังแปลงตำแหน่งเท้าบนพื้นเวที · คลิปเล่นต่อได้ตามปกติ"
                     : "กำลังวิเคราะห์ตำแหน่งนักเต้น · คลิปเล่นต่อได้ตามปกติ"
                 : formationTimeline.length === 0 ? "ยังไม่พบรูปแบบแถวที่มั่นใจพอ"
                   : `แถว ${formationTimeline.filter((item) => item.time <= time).length} / ${formationTimeline.length} · ${formationPoints.length} คน · เปลี่ยนตามเวลา ${formatTime(time)}`}
@@ -781,16 +829,29 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
 
       {!isFullscreen && (
         <div className="yp-formation-tools">
+          <button type="button" onClick={() => {
+            if (calibrationArmed) {
+              setCalibrationArmed(false);
+              setCalibrationMarks([]);
+            } else beginStageCalibration();
+          }}>
+            {calibrationArmed ? `คลิกมุมพื้นเวที ${calibrationMarks.length}/4` : stageCorners.length === 4 ? "ตั้งค่าพื้นเวทีใหม่" : "ตั้งค่าพื้นเวที (4 จุด)"}
+          </button>
           <button
             type="button"
             onClick={["loading", "running"].includes(formationStatus) ? stopFormationAnalysis : startFormationAnalysis}
+            disabled={!stageCorners.length && !["loading", "running"].includes(formationStatus)}
           >
             {formationStatus === "loading" ? "กำลังเริ่มวิเคราะห์… (ยกเลิก)" : formationStatus === "running" ? "หยุดรอผลวิเคราะห์" : formationStatus === "ready" ? "วิเคราะห์แถวอีกครั้ง" : "วิเคราะห์แถวทั้งคลิป"}
           </button>
           <small>
-            {["loading", "running"].includes(formationStatus)
+            {calibrationArmed
+              ? "หยุดคลิปไว้ แล้วคลิกมุมพื้นเวทีตามเข็มนาฬิกา: มุมไกลซ้าย → ไกลขวา → ใกล้ขวา → ใกล้ซ้าย"
+              : stageCorners.length !== 4 && formationStatus === "off"
+                ? "ตั้งค่าพื้นเวที 4 มุมก่อน เพื่อแปลงตำแหน่งเท้าเป็นแผนผังมองจากด้านบน"
+              : ["loading", "running"].includes(formationStatus)
               ? "วิเคราะห์เบื้องหลัง ไม่หยุดหรือหน่วงคลิป · เมื่อเสร็จ แผนผังจะตามตำแหน่งเวลาในคลิป"
-              : "วิเคราะห์ใน Ubuntu เครื่องนี้ ไม่ต้องแชร์หน้าจอ · ครั้งแรกอาจดาวน์โหลดโมเดลตรวจจับ"}
+              : "วิเคราะห์ใน Ubuntu เครื่องนี้ ไม่ต้องแชร์หน้าจอ · จุดคำนวณจากตำแหน่งเท้าบนพื้นเวที"}
           </small>
           {formationError && <small className="yp-formation-error" role="status">วิเคราะห์ตำแหน่งไม่ได้: {formationError}</small>}
         </div>
