@@ -1,5 +1,6 @@
 """Bounded background job service; bind to loopback, never expose publicly."""
 import hmac
+import hashlib
 import json
 import os
 import re
@@ -18,27 +19,36 @@ from urllib.parse import urlparse
 TOKEN = os.environ.get("AUDIO_ANALYSIS_TOKEN", "")
 JOBS = {}
 LOCK = threading.Lock()
+DOWNLOAD_LOCK = threading.Lock()
 POOL = ThreadPoolExecutor(max_workers=1)
 FORMATION_POOL = ThreadPoolExecutor(max_workers=1)
 RUNNER = Path(__file__).with_name("analyze.py")
 FORMATION_RUNNER = Path(__file__).with_name("analyze_formations.py")
 CACHE_DIR = Path(os.environ.get("AUDIO_ANALYSIS_CACHE", str(Path.home() / ".cache" / "muverse-audio")))
-CACHE_TTL = 30 * 86400
-FAST_PROFILE = "fast-repeat-v3"
 ENGINE = os.environ.get("AUDIO_ANALYSIS_ENGINE", "fast")
 if ENGINE not in ("fast", "full"):
     raise ValueError("AUDIO_ANALYSIS_ENGINE must be fast or full")
 LEASE_SECONDS = 8 if ENGINE == "fast" else 30
 JOB_TIMEOUT = 27 if ENGINE == "fast" else 180
 STAGES = {"downloading", "decoding", "separating", "features", "loading-model", "analyzing",
-          "extracting-frames", "tracking-dancers", "refining-positions"}
+          "extracting-frames", "tracking-dancers", "projecting-floor"}
 ERROR_CODES = {"dependency-missing", "tool-missing", "download-timeout", "decode-timeout",
                "download-failed", "decode-failed", "download-rejected", "analysis-failed"}
 FORMATION_ERRORS = {"dependency-missing", "tool-missing", "download-timeout", "download-failed",
-                    "download-rejected", "decode-failed", "analysis-failed", "invalid-result", "timeout"}
+                    "download-rejected", "decode-failed", "analysis-failed", "invalid-result", "invalid-stage-corners", "timeout"}
 FORMATION_JOBS = {}
 FORMATION_CACHE_TTL = 30 * 86400
 FORMATION_JOB_TIMEOUT = 900
+
+
+def clear_audio_cache():
+    """Remove persisted audio-analysis results; only formation timelines are retained."""
+    for pattern in ("fast-repeat-v*-*.json", "fast-repeat-v*-*.tmp", "fold0-v1-*.json", "fold0-v1-*.tmp"):
+        for path in CACHE_DIR.glob(pattern):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def read_stage(root):
@@ -77,34 +87,14 @@ def valid_segments(value):
                0 <= s["start"] < s["end"] <= 900 for s in value)
 
 
-def read_cache(video_id):
-    # Prefer an already available full-model result. Never label a fast result
-    # as All-In-One, and never let a fast cache overwrite a full-model result.
-    profiles = [("fold0-v1", "full")]
-    if ENGINE == "fast":
-        profiles.append((FAST_PROFILE, "fast"))
-    for profile, engine in profiles:
-        try:
-            path = CACHE_DIR / f"{profile}-{video_id}.json"
-            if path.stat().st_size > 100000:
-                continue
-            data = json.loads(path.read_text())
-            ttl = 300 if engine == "fast" and not data.get("segments") else CACHE_TTL
-            if time.time() - data["updated"] > ttl or not valid_segments(data["segments"]):
-                continue
-            return {"status": "ready", "engine": engine, "segments": data["segments"], "updated": data["updated"], "cached": True}
-        except (OSError, ValueError, TypeError, KeyError):
-            continue
-    return None
+def formation_cache_path(video_id, calibration_key):
+    # Keep calibrated floor projections separate from older algorithms and from
+    # runs that use different stage corners.
+    return CACHE_DIR / f"formation-v13-{video_id}-{calibration_key}.json"
 
 
-def formation_cache_path(video_id):
-    # Keep results from earlier count and position algorithms out of the new one.
-    return CACHE_DIR / f"formation-v6-{video_id}.json"
-
-
-def read_formation_cache(video_id):
-    path = formation_cache_path(video_id)
+def read_formation_cache(video_id, calibration_key):
+    path = formation_cache_path(video_id, calibration_key)
     try:
         if time.time() - path.stat().st_mtime > FORMATION_CACHE_TTL:
             return None
@@ -134,24 +124,28 @@ def valid_formations(formations):
     return True
 
 
-def run_formation_job(video_id):
+def run_formation_job(video_id, job_key, stage_corners, calibration_key):
     with LOCK:
-        job = FORMATION_JOBS.get(video_id, {})
+        job = FORMATION_JOBS.get(job_key, {})
         job.update(status="processing", stage="downloading", updated=time.time())
-        FORMATION_JOBS[video_id] = job
+        FORMATION_JOBS[job_key] = job
     tempdir = tempfile.TemporaryDirectory(prefix="muverse-formation-")
     process = None
     errors = None
+    download_lock_held = False
     began = time.monotonic()
     try:
         root = Path(tempdir.name)
         errors = (root / "worker.log").open("w+b")
+        DOWNLOAD_LOCK.acquire()
+        download_lock_held = True
         env = os.environ.copy()
         threads = str(max(1, min(2, cpu_threads())))
         env["FORMATION_THREADS"] = threads
         for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
             env[name] = threads
-        process = subprocess.Popen([sys.executable, str(FORMATION_RUNNER), video_id, str(root)],
+        process = subprocess.Popen([sys.executable, str(FORMATION_RUNNER), video_id, str(root),
+                                     json.dumps(stage_corners, separators=(",", ":"))],
                                    stdout=subprocess.PIPE, stderr=errors, env=env,
                                    start_new_session=(os.name != "nt"))
         while True:
@@ -162,7 +156,10 @@ def run_formation_job(video_id):
                 stage = read_stage(root)
                 if stage:
                     with LOCK:
-                        FORMATION_JOBS[video_id]["stage"] = stage
+                        FORMATION_JOBS[job_key]["stage"] = stage
+                    if stage != "downloading" and download_lock_held:
+                        DOWNLOAD_LOCK.release()
+                        download_lock_held = False
                 if time.monotonic() - began > FORMATION_JOB_TIMEOUT:
                     raise RuntimeError("timeout")
         if process.returncode:
@@ -175,15 +172,17 @@ def run_formation_job(video_id):
         result = json.loads(output.decode().strip().splitlines()[-1])
         if not valid_formations(result.get("formations")):
             raise RuntimeError("invalid-result")
-        job = {"status": "ready", "engine": "formation-v1", "formations": result["formations"]}
+        job = {"status": "ready", "engine": "formation-v2", "formations": result["formations"]}
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        formation_cache_path(video_id).write_text(json.dumps(job, separators=(",", ":")))
+        formation_cache_path(video_id, calibration_key).write_text(json.dumps(job, separators=(",", ":")))
     except Exception as error:
         if process is not None:
             stop_process(process)
         reason = str(error) if str(error) in FORMATION_ERRORS else "analysis-failed"
         job = {"status": "failed", "reason": reason, "stage": read_stage(Path(tempdir.name)) or "unknown"}
     finally:
+        if download_lock_held:
+            DOWNLOAD_LOCK.release()
         if errors is not None:
             errors.seek(max(0, errors.seek(0, 2) - 4096))
             tail = errors.read().decode("utf-8", errors="replace")
@@ -198,23 +197,8 @@ def run_formation_job(video_id):
             errors.close()
         tempdir.cleanup()
     with LOCK:
-        FORMATION_JOBS[video_id] = {**job, "updated": time.time()}
+        FORMATION_JOBS[job_key] = {**job, "updated": time.time()}
     print(f"[formation] {video_id}: {job['status']} ({time.monotonic() - began:.1f}s) {job.get('reason', '')}", flush=True)
-
-
-def save_cache(video_id, job):
-    try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        profile = FAST_PROFILE if job.get("engine", ENGINE) == "fast" else "fold0-v1"
-        path = CACHE_DIR / f"{profile}-{video_id}.json"
-        temp = path.with_suffix(".tmp")
-        temp.write_text(json.dumps({"updated": time.time(), "segments": job["segments"]}))
-        temp.replace(path)
-        files = sorted([*CACHE_DIR.glob("fast-repeat-v[0-9]*-*.json"), *CACHE_DIR.glob("fold0-v1-*.json")], key=lambda p: p.stat().st_mtime)
-        for old in files[:-500]:
-            old.unlink(missing_ok=True)
-    except OSError:
-        pass  # A read-only/full cache must never lose a successful analysis.
 
 
 def abandoned(video_id):
@@ -253,6 +237,7 @@ def run_job(video_id):
         JOBS[video_id].update(status="processing", stage="downloading", updated=time.time())
     process = None
     errors = None
+    download_lock_held = False
     began = time.monotonic()
     tempdir = tempfile.TemporaryDirectory(prefix="muverse-audio-")
     try:
@@ -264,6 +249,8 @@ def run_job(video_id):
         for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "AUDIO_ANALYSIS_THREADS"):
             env[name] = threads
         errors = (root / "worker.log").open("w+b")
+        DOWNLOAD_LOCK.acquire()
+        download_lock_held = True
         process = subprocess.Popen([sys.executable, str(RUNNER), video_id, str(root)],
                                    stdout=subprocess.PIPE, stderr=errors, env=env,
                                    start_new_session=(os.name != "nt"))
@@ -294,6 +281,9 @@ def run_job(video_id):
                         with LOCK:
                             previous = JOBS[video_id].get("stage")
                             JOBS[video_id]["stage"] = stage
+                        if stage != "downloading" and download_lock_held:
+                            DOWNLOAD_LOCK.release()
+                            download_lock_held = False
                         if stage != previous:
                             print(f"[audio] {video_id}: {stage} (elapsed {time.monotonic() - began:.1f}s)", flush=True)
                 except OSError:
@@ -313,10 +303,11 @@ def run_job(video_id):
         if not valid_segments(result["segments"]):
             raise RuntimeError("invalid-result")
         if ENGINE == "fast" and isinstance(result.get("diagnostics"), dict):
-            summary = {k: v for k, v in result["diagnostics"].items() if k in ("reason", "candidatePairs", "eligibleFamilies") and isinstance(v, (str, int))}
+            summary = {k: v for k, v in result["diagnostics"].items()
+                       if k in ("reason", "candidatePairs", "eligibleFamilies", "relaxedCandidatePairs", "relaxedEligibleFamilies")
+                       and isinstance(v, (str, int))}
             print(f"[audio] {video_id}: fast summary {json.dumps(summary)}", flush=True)
         job = {"status": "ready", "engine": ENGINE, "segments": result["segments"]}
-        save_cache(video_id, job)
     except Exception as error:
         if process is not None:
             stop_process(process)
@@ -327,6 +318,8 @@ def run_job(video_id):
         reason = str(error) if str(error) in ERROR_CODES | {"cancelled", "timeout"} else "audio-analysis-unavailable"
         job = {"status": "failed", "reason": reason, "stage": JOBS.get(video_id, {}).get("stage", "unknown")}
     finally:
+        if download_lock_held:
+            DOWNLOAD_LOCK.release()
         if errors is not None:
             if job.get("status") == "failed":
                 errors.seek(max(0, errors.seek(0, 2) - 4096))
@@ -374,7 +367,23 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         formation_match = re.fullmatch(r"/formations/([A-Za-z0-9_-]{11})", path)
         if formation_match:
-            return self.handle_formation(formation_match[1])
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 2048:
+                    return self.respond(400, {"error": "invalid-calibration"})
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict):
+                    return self.respond(400, {"error": "invalid-calibration"})
+                stage_corners = body.get("stageCorners")
+                if (not isinstance(stage_corners, list) or len(stage_corners) != 4 or
+                    not all(isinstance(point, dict) and isinstance(point.get("x"), (int, float)) and
+                            isinstance(point.get("y"), (int, float)) and
+                            math.isfinite(point["x"]) and math.isfinite(point["y"]) and
+                            0 <= point["x"] <= 1 and 0 <= point["y"] <= 1 for point in stage_corners)):
+                    return self.respond(400, {"error": "invalid-calibration"})
+            except (ValueError, TypeError, UnicodeDecodeError):
+                return self.respond(400, {"error": "invalid-calibration"})
+            return self.handle_formation(formation_match[1], stage_corners)
         match = re.fullmatch(r"/jobs/([A-Za-z0-9_-]{11})", path)
         if not match:
             return self.respond(400, {"error": "invalid-video-id"})
@@ -382,17 +391,9 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             now = time.time()
             for key, job in list(JOBS.items()):
-                ttl = failure_ttl(job) if job["status"] == "failed" else 86400
+                ttl = failure_ttl(job) if job["status"] == "failed" else 300
                 if job["status"] in ("ready", "failed") and now - job["updated"] > ttl:
                     del JOBS[key]
-            if video_id not in JOBS:
-                cached = read_cache(video_id)
-                if cached is not None:
-                    if len(JOBS) >= 128:
-                        completed = [k for k, j in JOBS.items() if j["status"] in ("ready", "failed")]
-                        if completed:
-                            del JOBS[min(completed, key=lambda k: JOBS[k]["updated"])]
-                    JOBS[video_id] = cached
             if video_id not in JOBS:
                 if sum(j["status"] in ("queued", "processing") for j in JOBS.values()) >= 8:
                     return self.respond(429, {"status": "busy", "engine": ENGINE})
@@ -407,26 +408,29 @@ class Handler(BaseHTTPRequestHandler):
             result.setdefault("engine", ENGINE)
         self.respond(200, result)
 
-    def handle_formation(self, video_id):
+    def handle_formation(self, video_id, stage_corners):
+        calibration_key = hashlib.sha256(json.dumps(stage_corners, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:12]
+        job_key = f"{video_id}:{calibration_key}"
         with LOCK:
             now = time.time()
             for key, job in list(FORMATION_JOBS.items()):
                 ttl = 15 if job["status"] == "failed" else FORMATION_CACHE_TTL
                 if job["status"] in ("ready", "failed") and now - job["updated"] > ttl:
                     del FORMATION_JOBS[key]
-            if video_id not in FORMATION_JOBS:
-                cached = read_formation_cache(video_id)
+            if job_key not in FORMATION_JOBS:
+                cached = read_formation_cache(video_id, calibration_key)
                 if cached is not None:
-                    FORMATION_JOBS[video_id] = {**cached, "updated": now}
-            if video_id not in FORMATION_JOBS:
+                    FORMATION_JOBS[job_key] = {**cached, "updated": now}
+            if job_key not in FORMATION_JOBS:
                 if sum(job["status"] in ("queued", "processing") for job in FORMATION_JOBS.values()) >= 2:
-                    return self.respond(429, {"status": "busy", "engine": "formation-v1"})
-                FORMATION_JOBS[video_id] = {"status": "queued", "stage": "downloading", "updated": now}
-                FORMATION_POOL.submit(run_formation_job, video_id)
-            job = FORMATION_JOBS[video_id]
+                    return self.respond(429, {"status": "busy", "engine": "formation-v2"})
+                FORMATION_JOBS[job_key] = {"status": "queued", "stage": "downloading", "updated": now}
+                FORMATION_POOL.submit(run_formation_job, video_id, job_key, stage_corners, calibration_key)
+            job = FORMATION_JOBS[job_key]
             result = {key: value for key, value in job.items() if key != "updated"}
         self.respond(200, result)
 
 
 if __name__ == "__main__":
+    clear_audio_cache()
     ThreadingHTTPServer(("127.0.0.1", int(os.environ.get("AUDIO_ANALYSIS_PORT", "8765"))), Handler).serve_forever()

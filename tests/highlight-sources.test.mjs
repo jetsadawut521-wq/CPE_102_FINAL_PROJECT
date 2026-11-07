@@ -24,7 +24,7 @@ test('pre/post chorus and isolated timestamp comments are not complete hooks', (
 });
 
 test('full comment section lists preserve each individual boundary and explain their source', () => {
-  const result = chapterHighlights('', [{ text: '0:00 intro\n0:30 chorus 1\n0:50 verse\n1:20 chorus 2\n1:42 bridge', likes: 0 }], 130);
+  const result = chapterHighlights('', [{ text: '0:00 intro\n0:30 Set Me Free chorus 1\n0:50 verse 1\n1:20 Set Me Free chorus 2\n1:42 bridge', likes: 0 }], 130);
   assert.deepEqual(result.map(({ start, end }) => [start, end]), [[30, 50], [80, 102]]);
   assert.equal(result[0].confidence, 'medium');
   assert.match(result[0].evidence, /คอมเมนต์/);

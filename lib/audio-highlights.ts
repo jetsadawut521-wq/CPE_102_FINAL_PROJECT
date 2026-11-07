@@ -36,13 +36,14 @@ export function combineAudioHighlights(metadata: AutoSegment[], audio: AutoSegme
 /** Resolve source priority BEFORE the first snapshot is published. A lyric
  * repeat may be a pre-chorus or only the sung middle of an instrumental hook.
  * When fast audio is running, wait for that bounded result instead of locking
- * the earlier lyric guess. Uploader chapters remain usable; comments cannot overrule analyzed audio.
+ * the earlier lyric guess. Explicit uploader/comment section boundaries remain primary.
  */
 export function selectHighlightProposal(metadata: AutoSegment[], audio: AutoSegment[], options: {
   pending: boolean; engine?: string; source?: HighlightsResponse["source"];
 }): AutoSegment[] {
   const trusted = metadata.filter(segment => segment.kind === "dance-break" ||
-    segment.origin === "uploader" || (segment.origin === undefined && options.source === "chapters"));
+    segment.origin === "uploader" || (segment.origin === "comment" && segment.kind === "chorus") ||
+    (segment.origin === undefined && options.source === "chapters"));
   if (options.pending && options.engine !== "full") return trusted;
   if (audio.length) return combineAudioHighlights(trusted, audio, true);
   return metadata; // Comment tables/lyrics remain a fallback if audio is unavailable.

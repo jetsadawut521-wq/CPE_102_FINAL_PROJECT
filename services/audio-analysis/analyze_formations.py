@@ -9,7 +9,6 @@ from collections import Counter
 from pathlib import Path
 
 PERSON_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/float32/1/efficientdet_lite2.tflite"
-POSE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
 MAX_DURATION = 900
 # Two-second spacing roughly halves CPU inference for typical practice clips.
 SAMPLE_FPS = 0.5
@@ -17,6 +16,48 @@ SAMPLE_FPS = 0.5
 
 def set_stage(root, stage):
     (root / "stage").write_text(stage)
+
+
+def stage_projection(corners):
+    """Map four clicked floor corners to a normalized top-down stage plane."""
+    import numpy as np
+
+    source = np.asarray([[point["x"], point["y"]] for point in corners], dtype=float)
+    target = np.asarray([[0.08, 0.08], [0.92, 0.08], [0.92, 0.92], [0.08, 0.92]], dtype=float)
+    # A correctly ordered convex quadrilateral is required; otherwise the
+    # perspective transform can flip or collapse the floor map.
+    edges = np.roll(source, -1, axis=0) - source
+    cross = [edges[i, 0] * edges[(i + 1) % 4, 1] - edges[i, 1] * edges[(i + 1) % 4, 0] for i in range(4)]
+    area = abs(sum(source[i, 0] * source[(i + 1) % 4, 1] - source[(i + 1) % 4, 0] * source[i, 1]
+                   for i in range(4))) * 0.5
+    if area < 0.02 or not (all(value > 1e-5 for value in cross) or all(value < -1e-5 for value in cross)):
+        raise ValueError("invalid-stage-corners")
+    equations = []
+    values = []
+    for (x, y), (u, v) in zip(source, target):
+        equations.append([x, y, 1, 0, 0, 0, -u * x, -u * y])
+        values.append(u)
+        equations.append([0, 0, 0, x, y, 1, -v * x, -v * y])
+        values.append(v)
+    try:
+        matrix = np.linalg.solve(np.asarray(equations), np.asarray(values))
+    except np.linalg.LinAlgError as error:
+        raise ValueError("invalid-stage-corners") from error
+    return np.append(matrix, 1).reshape(3, 3)
+
+
+def project_samples(samples, transform, root):
+    import numpy as np
+
+    set_stage(root, "projecting-floor")
+    for sample in samples:
+        for point in sample["points"]:
+            projected = transform @ np.asarray([point["x"], point["y"], 1.0])
+            if abs(projected[2]) < 1e-8:
+                continue
+            point["x"] = min(1.0, max(0.0, float(projected[0] / projected[2])))
+            point["y"] = min(1.0, max(0.0, float(projected[1] / projected[2])))
+    return samples
 
 
 def cached_model(filename, url):
@@ -72,11 +113,19 @@ def point_distance(left, right):
     return sum(((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5 for a, b in zip(left, right)) / len(left)
 
 
+def formation_distance(left, right):
+    if len(left) != len(right):
+        return 1.0
+    distances = [((a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2) ** 0.5 for a, b in zip(left, right)]
+    return 0.5 * (sum(distances) / len(distances)) + 0.5 * max(distances, default=0.0)
+
+
 def average_points(samples):
     size = len(samples[0])
     return [{"x": sum(sample[i]["x"] for sample in samples) / len(samples),
              "y": sum(sample[i]["y"] for sample in samples) / len(samples),
-             "color": i % 6} for i in range(size)]
+             "color": samples[0][i].get("color", i % 10),
+             "track_id": samples[0][i].get("track_id", i)} for i in range(size)]
 
 
 def collect_detections(paths, root):
@@ -119,11 +168,15 @@ def collect_detections(paths, root):
                 box_height = bottom - top
                 if box_height < 0.08 or box_width < 0.02:
                     continue
+                crop = rgb[int(top * height + box_height * height * 0.18):int(top * height + box_height * height * 0.65),
+                           int(left * width + box_width * width * 0.25):int(left * width + box_width * width * 0.75)]
+                appearance = crop.reshape(-1, 3).mean(axis=0).astype(float) / 255 if crop.size else np.zeros(3)
                 # The bottom center approximates where the dancer meets the floor;
                 # a fixed 92% offset floats dots above the floor by different
                 # amounts as bounding-box heights change with pose and distance.
                 candidates.append({"x": (left + right) / 2, "y": bottom,
-                                   "score": category.score, "box": (left, top, right, bottom)})
+                                   "score": category.score, "box": (left, top, right, bottom),
+                                   "appearance": appearance.tolist()})
             candidates.sort(key=lambda point: point["score"], reverse=True)
             detections = []
             for candidate in candidates:
@@ -140,35 +193,106 @@ def collect_detections(paths, root):
                         break
                 if not duplicate:
                     detections.append(candidate)
-            detections.sort(key=lambda point: point["x"])
-            detections = [{"x": point["x"], "y": point["y"]} for point in detections]
             samples.append({"index": index, "time": index / SAMPLE_FPS, "points": detections})
     return samples
 
 
+def choose_target_count(samples):
+    counts = Counter(len(sample["points"]) for sample in samples if len(sample["points"]) >= 2)
+    if not counts:
+        return 0
+    supported = set()
+    frame_counts = [len(sample["points"]) for sample in samples]
+    for start in range(max(1, len(frame_counts) - 4)):
+        window = Counter(count for count in frame_counts[start:start + 5] if count >= 2)
+        supported.update(count for count, frequency in window.items() if frequency >= 3)
+    target = max(counts, key=lambda count: (counts[count], count))
+    print(json.dumps({"formation_counts": dict(sorted(counts.items())),
+                      "persistent_counts": sorted(supported), "selected_count": target}), file=sys.stderr, flush=True)
+    return target
+
+
+def track_people(samples, target_count):
+    from scipy.optimize import linear_sum_assignment
+    import numpy as np
+
+    tracks = []
+    tracked_samples = []
+    for sample in samples:
+        detections = sample["points"]
+        assignments = []
+        if not tracks:
+            if len(detections) < target_count:
+                tracked_samples.append({**sample, "points": [], "assignments": []})
+                continue
+            initial = sorted(sorted(detections, key=lambda item: item["score"], reverse=True)[:target_count],
+                             key=lambda item: item["x"])
+            for track_id, detection in enumerate(initial):
+                tracks.append({"id": track_id, "x": detection["x"], "y": detection["y"],
+                               "vx": 0.0, "vy": 0.0, "time": sample["time"],
+                               "appearance": detection["appearance"], "missing": 0})
+                assignments.append({"id": track_id, "point": {"x": detection["x"], "y": detection["y"]}, "observed": True})
+        else:
+            pairs = []
+            if detections:
+                costs = np.full((len(tracks), len(detections)), 1e3, dtype=float)
+                for track_index, track in enumerate(tracks):
+                    dt = max(0.1, sample["time"] - track["time"])
+                    px = min(1.0, max(0.0, track["x"] + track["vx"] * dt))
+                    py = min(1.0, max(0.0, track["y"] + track["vy"] * dt))
+                    for detection_index, detection in enumerate(detections):
+                        spatial = ((px - detection["x"]) ** 2 + (py - detection["y"]) ** 2) ** 0.5
+                        appearance = sum((a - b) ** 2 for a, b in zip(track["appearance"], detection["appearance"])) ** 0.5
+                        if spatial <= min(0.48, 0.22 + dt * 0.09):
+                            costs[track_index, detection_index] = spatial + appearance * 0.18
+                rows, columns = linear_sum_assignment(costs)
+                pairs = [(row, column) for row, column in zip(rows, columns) if costs[row, column] < 1e3]
+            matched_tracks = set()
+            for track_index, detection_index in pairs:
+                track = tracks[track_index]
+                detection = detections[detection_index]
+                dt = max(0.1, sample["time"] - track["time"])
+                vx = (detection["x"] - track["x"]) / dt
+                vy = (detection["y"] - track["y"]) / dt
+                track["vx"] = max(-0.4, min(0.4, 0.55 * track["vx"] + 0.45 * vx))
+                track["vy"] = max(-0.4, min(0.4, 0.55 * track["vy"] + 0.45 * vy))
+                track["x"], track["y"], track["time"] = detection["x"], detection["y"], sample["time"]
+                track["appearance"] = [0.7 * old + 0.3 * new for old, new in zip(track["appearance"], detection["appearance"])]
+                track["missing"] = 0
+                matched_tracks.add(track_index)
+                assignments.append({"id": track["id"], "point": {"x": detection["x"], "y": detection["y"]}, "observed": True})
+            for track_index, track in enumerate(tracks):
+                if track_index in matched_tracks:
+                    continue
+                track["missing"] += 1
+                track["vx"] *= 0.35
+                track["vy"] *= 0.35
+                if track["missing"] <= 1:
+                    dt = max(0.1, sample["time"] - track["time"])
+                    track["x"] = min(1.0, max(0.0, track["x"] + track["vx"] * dt))
+                    track["y"] = min(1.0, max(0.0, track["y"] + track["vy"] * dt))
+                track["time"] = sample["time"]
+                assignments.append({"id": track["id"], "point": {"x": track["x"], "y": track["y"]}, "observed": False})
+
+        points = [{"x": track["x"], "y": track["y"], "color": track["id"] % 10,
+                   "track_id": track["id"]} for track in tracks]
+        tracked_samples.append({"index": sample["index"], "time": sample["time"],
+                                "points": points, "assignments": assignments})
+    return tracked_samples
+
+
 def build_timeline(samples):
-    # Collapse frame-level jitter into stable layouts. A transition is accepted
-    # only after three successive samples agree on dancer count and geometry.
+    # Collapse frame-level jitter into stable layouts. IDs remain fixed even
+    # when dancers cross, so a transition moves each dancer's own dot.
     if not samples:
         return []
     frame_counts = [len(sample["points"]) for sample in samples]
     counts = Counter(count for count in frame_counts if count >= 2)
     if not counts:
         return []
-    # Prefer the largest count that is repeatedly supported in nearby samples.
-    # A clip-wide mode systematically undercounts when a dancer is often hidden
-    # behind another dancer; requiring 3 detections within a 5-second window
-    # avoids letting a one-frame false positive increase the roster.
-    supported_counts = set()
-    for start in range(max(1, len(frame_counts) - 4)):
-        window = frame_counts[start:start + 5]
-        window_counts = Counter(count for count in window if count >= 2)
-        supported_counts.update(count for count, frequency in window_counts.items() if frequency >= 3)
-    # Keep the clip-wide robust mode. Choosing the highest locally persistent
-    # count over-counts when a false person box is stable for a few seconds.
+    # Every tracked frame has the same number of identity slots. Ignore the
+    # initial frames before tracking found a complete group.
     target_count = max(counts, key=lambda count: (counts[count], count))
-    print(json.dumps({"formation_counts": dict(sorted(counts.items())),
-                      "persistent_counts": sorted(supported_counts), "selected_count": target_count}), file=sys.stderr, flush=True)
     layouts = []
     current = None
     candidate = []
@@ -187,8 +311,11 @@ def build_timeline(samples):
                                 "sample_indexes": [item["index"] for item in candidate]})
                 candidate = []
             continue
-        reference = average_points([item["points"] for item in current[-3:]])
-        if point_distance(reference, points) <= 0.12:
+        # Compare against the last committed layout, not a sliding window. A
+        # sliding reference gradually follows slow formation changes and can
+        # absorb them without ever creating a new layout.
+        reference = average_points([item["points"] for item in current[:2]])
+        if formation_distance(reference, points) <= 0.1:
             current.append(sample)
             candidate = []
         else:
@@ -204,60 +331,8 @@ def build_timeline(samples):
     return layouts
 
 
-def pose_positions(landmarks):
-    points = []
-    for pose in landmarks:
-        hips = [pose[index] for index in (23, 24)
-                if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
-        ankles = [pose[index] for index in (27, 28, 29, 30, 31, 32)
-                  if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
-        if not hips or not ankles:
-            continue
-        points.append({"x": min(1.0, max(0.0, sum(item.x for item in hips) / len(hips))),
-                       "y": min(1.0, max(0.0, max(item.y for item in ankles)))}
-                      )
-    return sorted(points, key=lambda point: point["x"])
-
-
-def refine_formation_positions(formations, samples, paths, root):
-    if not formations:
-        return formations
-    import mediapipe as mp
-    import numpy as np
-    from PIL import Image
-
-    set_stage(root, "refining-positions")
-    model = cached_model("pose_landmarker_lite.task", POSE_MODEL_URL)
-    options = mp.tasks.vision.PoseLandmarkerOptions(
-        base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
-        running_mode=mp.tasks.vision.RunningMode.IMAGE,
-        num_poses=10,
-        min_pose_detection_confidence=0.3,
-        min_pose_presence_confidence=0.3,
-    )
-    with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
-        for formation in formations:
-            refined = []
-            # Layouts are accepted after a few stable samples. Refine only those
-            # representative frames instead of running pose inference on the clip.
-            for index in formation.pop("sample_indexes", []):
-                with Image.open(paths[index]) as image:
-                    rgb = np.asarray(image.convert("RGB"))
-                result = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
-                points = pose_positions(result.pose_landmarks)
-                if len(points) == len(formation["points"]):
-                    refined.append(points)
-                else:
-                    print(f"[formation-pose] pose-count-mismatch expected={len(formation['points'])} detected={len(points)} time={formation['time']}",
-                          file=sys.stderr, flush=True)
-                if len(refined) >= 3:
-                    break
-            if refined:
-                formation["points"] = average_points(refined)
-    return formations
-
-
-def analyze(video_id, root):
+def analyze(video_id, root, stage_corners):
+    transform = stage_projection(stage_corners)
     if os.name == "posix":
         try:
             os.nice(10)
@@ -265,24 +340,31 @@ def analyze(video_id, root):
             pass
     frames = detector_frames(video_id, root)
     samples = collect_detections(frames, root)
+    target_count = choose_target_count(samples)
+    samples = track_people(samples, target_count)
+    # Use the same floor-plane projection approach as GridStage: dancers' foot
+    # locations are transformed using the calibrated four-corner quadrilateral.
+    samples = project_samples(samples, transform, root)
     formations = build_timeline(samples)
-    try:
-        formations = refine_formation_positions(formations, samples, frames, root)
-    except Exception as error:
-        print(f"[formation-pose] optional position refinement skipped: {error}", file=sys.stderr, flush=True)
-        for formation in formations:
-            formation.pop("sample_indexes", None)
-    return {"engine": "formation-v1", "formations": formations}
+    for formation in formations:
+        formation.pop("sample_indexes", None)
+    return {"engine": "formation-v2", "formations": formations}
 
 
 if __name__ == "__main__":
     import re
     import traceback
-    if len(sys.argv) != 3 or not re.fullmatch(r"[A-Za-z0-9_-]{11}", sys.argv[1]):
+    if len(sys.argv) != 4 or not re.fullmatch(r"[A-Za-z0-9_-]{11}", sys.argv[1]):
         raise SystemExit("Invalid video ID")
     root = Path(sys.argv[2])
     try:
-        print(json.dumps(analyze(sys.argv[1], root), separators=(",", ":")))
+        corners = json.loads(sys.argv[3])
+        if (not isinstance(corners, list) or len(corners) != 4 or
+            not all(isinstance(point, dict) and isinstance(point.get("x"), (int, float)) and
+                    isinstance(point.get("y"), (int, float)) and
+                    0 <= point["x"] <= 1 and 0 <= point["y"] <= 1 for point in corners)):
+            raise ValueError("invalid-stage-corners")
+        print(json.dumps(analyze(sys.argv[1], root, corners), separators=(",", ":")))
     except subprocess.TimeoutExpired:
         print(json.dumps({"error": "download-timeout" if (root / "stage").read_text().strip() == "downloading" else "decode-failed"}))
         raise SystemExit(1)
@@ -293,7 +375,7 @@ if __name__ == "__main__":
     except Exception as error:
         stage = (root / "stage").read_text().strip() if (root / "stage").exists() else "unknown"
         reason = "dependency-missing" if isinstance(error, (ImportError, ModuleNotFoundError)) else "analysis-failed"
-        if str(error) in ("download-rejected", "tool-missing"):
+        if str(error) in ("download-rejected", "tool-missing", "invalid-stage-corners"):
             reason = str(error)
         traceback.print_exc(file=sys.stderr)
         print(json.dumps({"error": reason, "stage": stage}))
