@@ -301,7 +301,9 @@ def pose_positions(landmarks):
             continue
         base = ankles or hips
         points.append({"x": min(1.0, max(0.0, sum(item.x for item in base) / len(base))),
-                       "y": min(1.0, max(0.0, sum(item.y for item in base) / len(base)))})
+                       # The lower visible ankle best approximates floor depth;
+                       # averaging also a lifted foot pulls the estimate upward.
+                       "y": min(1.0, max(0.0, max(item.y for item in ankles) if ankles else sum(item.y for item in hips) / len(hips)))} )
     return sorted(points, key=lambda point: point["x"])
 
 
@@ -374,8 +376,15 @@ def analyze(video_id, root):
     # Keep floor-depth ordering visible, but compress projected depth toward
     # the middle of the map so ground-level markers do not hug its lower edge.
     for formation in formations:
-        for point in formation["points"]:
-            point["y"] = min(1.0, max(0.0, 0.5 + 0.45 * (point["y"] - 0.5)))
+        points = formation["points"]
+        if not points:
+            continue
+        mean_depth = sum(point["y"] for point in points) / len(points)
+        map_center = 0.5 + 0.45 * (mean_depth - 0.5)
+        for point in points:
+            # Preserve the group's centered depth while making staggered rows
+            # distinct enough to read on the compact 16:9 formation map.
+            point["y"] = min(0.9, max(0.1, map_center + 1.1 * (point["y"] - mean_depth)))
     return {"engine": "formation-v1", "formations": formations}
 
 
