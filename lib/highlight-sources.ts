@@ -27,9 +27,30 @@ function isSectionLabel(label: string): boolean {
     "อินโทร|เอาท์โทร|เวิร์ส|พรีฮุ[คก]|ก่อนฮุ[คก]|บริดจ์|แร็ป|ท่อนจบ|ดนตรี|โซโล่|인트로|벌스|브릿지");
 }
 
+const CHORUS_MENTION = /\b(?:chorus|hook)\b|ฮุ[คก]|คอรัส|ท่อนสร้อย|후렴|코러스/i;
+const NON_CHORUS_SECTION = /\b(?:pre[\s-]*chorus|post[\s-]*chorus|pre[\s-]*hook|post[\s-]*hook|verse|bridge|intro|outro|dance[\s-]*break|instrumental|tutorial|breakdown)\b|พรี\s*(?:ฮุ[คก]|คอรัส)|ก่อน\s*(?:ฮุ[คก]|คอรัส)|หลัง\s*(?:ฮุ[คก]|คอรัส)|เวิร์ส|บริดจ์|อินโทร|เอาท์โทร|เบร[กค]แดนซ์|ดนตรี/i;
+const REACTION_WORDING = /\b(?:i\s+love|love\s+(?:this|that|the)|loved\s+(?:this|that)|my\s+favorite|my\s+favourite|(?:best|favorite|favourite)\s+part|beautiful|amazing|pretty|cute|nice|this\s+part|my\s+part|enjoy\s+this|great\s+part)\b|ชอบ(?:ท่อน|ช่วง|ตรง)|รัก(?:ท่อน|ช่วง|ตรง)|(?:ท่อน|ช่วง)นี้(?:ดี|สวย|มาก|คือที่สุด)/i;
+
+/** Comment labels may include song/title context, but must still name a chorus. */
+function isCommentChorusLabel(label: string): boolean {
+  const text = boundaryLabel(label);
+  if (NON_CHORUS_SECTION.test(text) || REACTION_WORDING.test(text)) return false;
+  return CHORUS_MENTION.test(text);
+}
+
+/** Accept contextual section names in a comment table so verses can be skipped, not poison the whole table. */
+function isCommentSectionLabel(label: string): boolean {
+  const text = boundaryLabel(label);
+  if (REACTION_WORDING.test(text)) return false;
+  if (isCommentChorusLabel(text) || isDanceBreakLabel(text) || isSectionLabel(text)) return true;
+  return NON_CHORUS_SECTION.test(text);
+}
+
 export function chapterHighlights(description: string, comments: CommentInput[], duration: number): AutoSegment[] {
-  const fromChapters = (chapters: Chapter[], uploader: boolean) => chapters
-    .filter((c) => (isChorusLabel(c.label) || isDanceBreakLabel(c.label)) && c.end - c.start >= 3 && c.end - c.start <= 90)
+  const fromChapters = (chapters: Chapter[], uploader: boolean, commentTable = false) => chapters
+    .filter((c) => (uploader ? isChorusLabel(c.label) || isDanceBreakLabel(c.label) :
+      (commentTable ? isCommentChorusLabel(c.label) : isChorusLabel(c.label)) || isDanceBreakLabel(c.label)) &&
+      c.end - c.start >= 3 && c.end - c.start <= 90)
     .map((c): AutoSegment => ({
       start: c.start, end: c.end,
       origin: uploader ? "uploader" : "comment",
@@ -37,16 +58,16 @@ export function chapterHighlights(description: string, comments: CommentInput[],
       label: `${c.label} (${uploader ? "ผู้อัปโหลดระบุ" : "คอมเมนต์ระบุ — โปรดตรวจสอบ"})`,
       confidence: uploader ? "high" : "medium",
       evidence: uploader ? "ใช้เวลาเริ่มและจบจาก chapter ของคลิปนี้ ไม่ได้เทียบเสียงหรือท่าเต้น" :
-        "ใช้รายการแบ่งท่อนในคอมเมนต์เดียวกัน ทั้งจุดเริ่มและขอบเขตถัดไป ยังไม่ได้ยืนยันด้วยเสียงหรือภาพ",
+        "คอมเมนต์ระบุช่วงท่อนฮุคพร้อมขอบเขตเวลา ใช้เป็นแหล่งข้อมูลหลัก แต่ยังไม่ได้ยืนยันด้วยเสียงหรือภาพ",
     }));
   const official = fromChapters(parseChapters(description, duration), true);
   // A full section list provides an end boundary; an isolated "1:02 chorus" does not.
   const lists = comments.map((c) => parseChapters(c.text, duration))
-    .filter((chapters) => chapters.every((c) => isSectionLabel(c.label)))
-    .filter((chapters) => chapters.some((c) => c.explicitEnd && (isChorusLabel(c.label) || isDanceBreakLabel(c.label))) ||
+    .filter((chapters) => chapters.every((c) => isCommentSectionLabel(c.label)))
+    .filter((chapters) => chapters.some((c) => c.explicitEnd && (isCommentChorusLabel(c.label) || isDanceBreakLabel(c.label))) ||
       (chapters.length >= 2 && chapters.some((c) => isDanceBreakLabel(c.label))) ||
-      (chapters.length >= 4 && chapters.filter((c) => isChorusLabel(c.label)).length >= 2));
-  const listed = lists.map((chapters) => fromChapters(chapters, false)).sort((a, b) => b.length - a.length)[0] ?? [];
+      (chapters.length >= 4 && chapters.filter((c) => isCommentChorusLabel(c.label)).length >= 2));
+  const listed = lists.map((chapters) => fromChapters(chapters, false, true)).sort((a, b) => b.length - a.length)[0] ?? [];
   return mergeHighlights(official, mergeHighlights(listed, supportedDanceBreakRanges(comments, duration)));
 }
 

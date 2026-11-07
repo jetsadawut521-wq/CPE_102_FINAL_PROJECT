@@ -157,12 +157,12 @@ test('download timeout is surfaced without exposing raw worker exception details
   assert.equal('traceback' in data, false);
 });
 
-test('comment-origin choruses cannot bypass audio priority even inside a chapters or mixed response', () => {
+test('explicit comment choruses are primary while non-chorus comment sections are excluded', () => {
   const audio = audioChoruses([{ start: 60, end: 90, label: 'chorus' }], 'fast');
-  const comment = { ...audio[0], origin: 'comment', start: 132, end: 137, label: 'Comment guess' };
+  const comment = { ...audio[0], origin: 'comment', start: 132, end: 152, label: 'Set Me Free chorus' };
   const uploaderBreak = { ...audio[0], origin: 'uploader', kind: 'dance-break', start: 160, end: 180 };
   const metadata = [comment, uploaderBreak];
-  assert.deepEqual(selectHighlightProposal(metadata, [], { pending: true, engine: 'fast', source: 'chapters' }), [uploaderBreak]);
-  assert.deepEqual(selectHighlightProposal(metadata, audio, { pending: false, engine: 'fast', source: 'comments' }).map(s => s.start), [60, 160]);
-  assert.equal(selectHighlightProposal(metadata, [], { pending: false, engine: 'fast', source: 'comments' }), metadata);
+  assert.deepEqual(selectHighlightProposal(metadata, [], { pending: true, engine: 'fast', source: 'comments' }), [comment, uploaderBreak]);
+  assert.deepEqual(selectHighlightProposal(metadata, audio, { pending: false, engine: 'fast', source: 'comments' }), [comment, uploaderBreak]);
+  assert.deepEqual(selectHighlightProposal(metadata, [], { pending: false, engine: 'fast', source: 'comments' }), metadata);
 });
