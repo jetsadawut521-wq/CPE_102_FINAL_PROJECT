@@ -295,17 +295,13 @@ def pose_positions(landmarks):
     for pose in landmarks:
         hips = [pose[index] for index in (23, 24)
                 if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
-        shoulders = [pose[index] for index in (11, 12)
-                     if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
         ankles = [pose[index] for index in (27, 28)
                   if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
-        if not hips:
+        if not hips and not ankles:
             continue
-        torso_y = [item.y for item in hips + shoulders] if shoulders else [item.y for item in hips]
-        torso_center_y = sum(torso_y) / len(torso_y)
-        vertical = 0.35 * (sum(item.y for item in ankles) / len(ankles)) + 0.65 * torso_center_y if ankles else torso_center_y
-        points.append({"x": min(1.0, max(0.0, sum(item.x for item in hips) / len(hips))),
-                       "y": min(1.0, max(0.0, vertical))})
+        base = ankles or hips
+        points.append({"x": min(1.0, max(0.0, sum(item.x for item in base) / len(base))),
+                       "y": min(1.0, max(0.0, sum(item.y for item in base) / len(base)))})
     return sorted(points, key=lambda point: point["x"])
 
 
@@ -375,6 +371,11 @@ def analyze(video_id, root):
         print(f"[formation-pose] optional position refinement skipped: {error}", file=sys.stderr, flush=True)
         for formation in formations:
             formation.pop("sample_indexes", None)
+    # Keep floor-depth ordering visible, but compress projected depth toward
+    # the middle of the map so ground-level markers do not hug its lower edge.
+    for formation in formations:
+        for point in formation["points"]:
+            point["y"] = min(1.0, max(0.0, 0.5 + 0.45 * (point["y"] - 0.5)))
     return {"engine": "formation-v1", "formations": formations}
 
 
