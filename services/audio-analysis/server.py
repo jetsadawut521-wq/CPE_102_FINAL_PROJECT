@@ -84,6 +84,7 @@ def read_cache(video_id):
     profiles = [("fold0-v1", "full")]
     if ENGINE == "fast":
         profiles.append((FAST_PROFILE, "fast"))
+    empty_cache = None
     for profile, engine in profiles:
         try:
             path = CACHE_DIR / f"{profile}-{video_id}.json"
@@ -93,10 +94,32 @@ def read_cache(video_id):
             ttl = 300 if engine == "fast" and not data.get("segments") else CACHE_TTL
             if time.time() - data["updated"] > ttl or not valid_segments(data["segments"]):
                 continue
-            return {"status": "ready", "engine": engine, "segments": data["segments"], "updated": data["updated"], "cached": True}
+            cached = {"status": "ready", "engine": engine, "segments": data["segments"],
+                      "updated": data["updated"], "cached": True}
+            if not data["segments"]:
+                empty_cache = cached
+                continue
+            return cached
         except (OSError, ValueError, TypeError, KeyError):
             continue
-    return None
+    # Profile v3 tightened boundary selection and intentionally invalidated
+    # v1/v2 results. Keep a previously successful range as a fallback only
+    # when the current full/v3 analyzers have no result for this clip.
+    if ENGINE == "fast":
+        for version in ("v2", "v1"):
+            try:
+                path = CACHE_DIR / f"fast-repeat-{version}-{video_id}.json"
+                if path.stat().st_size > 100000:
+                    continue
+                data = json.loads(path.read_text())
+                if (time.time() - data["updated"] > CACHE_TTL or not data.get("segments") or
+                        not valid_segments(data["segments"])):
+                    continue
+                return {"status": "ready", "engine": "fast", "segments": data["segments"],
+                        "updated": data["updated"], "cached": True, "legacyCache": True}
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
+    return empty_cache
 
 
 def formation_cache_path(video_id):
