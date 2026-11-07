@@ -9,24 +9,30 @@ from collections import Counter
 from pathlib import Path
 
 PERSON_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/float32/1/efficientdet_lite2.tflite"
+POSE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
 MAX_DURATION = 900
-SAMPLE_FPS = 1
+# Two-second spacing roughly halves CPU inference for typical practice clips.
+SAMPLE_FPS = 0.5
 
 
 def set_stage(root, stage):
     (root / "stage").write_text(stage)
 
 
-def person_model():
+def cached_model(filename, url):
     root = Path(os.environ.get("FORMATION_MODEL_CACHE", str(Path.home() / ".cache" / "muverse-audio" / "models")))
     root.mkdir(parents=True, exist_ok=True)
-    model = root / "efficientdet_lite2.tflite"
+    model = root / filename
     if not model.exists():
         temporary = model.with_suffix(".download")
-        with urllib.request.urlopen(PERSON_MODEL_URL, timeout=30) as response, temporary.open("wb") as destination:
+        with urllib.request.urlopen(url, timeout=15) as response, temporary.open("wb") as destination:
             shutil.copyfileobj(response, destination)
         temporary.replace(model)
     return model
+
+
+def person_model():
+    return cached_model("efficientdet_lite2.tflite", PERSON_MODEL_URL)
 
 
 def detector_frames(video_id, root):
@@ -87,7 +93,7 @@ def collect_detections(paths, root):
         # Dancers in wide practice-room shots can be small or partly occluded.
         # Keep lower-confidence person boxes, then reject implausibly small boxes
         # below before they affect the group-size estimate.
-        score_threshold=0.2,
+        score_threshold=0.15,
         category_allowlist=["person"],
     )
     samples = []
@@ -111,9 +117,12 @@ def collect_detections(paths, root):
                     continue
                 box_width = right - left
                 box_height = bottom - top
-                if box_height < 0.12 or box_width < 0.025:
+                if box_height < 0.08 or box_width < 0.02:
                     continue
-                candidates.append({"x": (left + right) / 2, "y": top + (bottom - top) * 0.92,
+                # The bottom center approximates where the dancer meets the floor;
+                # a fixed 92% offset floats dots above the floor by different
+                # amounts as bounding-box heights change with pose and distance.
+                candidates.append({"x": (left + right) / 2, "y": bottom,
                                    "score": category.score, "box": (left, top, right, bottom)})
             candidates.sort(key=lambda point: point["score"], reverse=True)
             detections = []
@@ -133,7 +142,7 @@ def collect_detections(paths, root):
                     detections.append(candidate)
             detections.sort(key=lambda point: point["x"])
             detections = [{"x": point["x"], "y": point["y"]} for point in detections]
-            samples.append({"time": index / SAMPLE_FPS, "points": detections})
+            samples.append({"index": index, "time": index / SAMPLE_FPS, "points": detections})
     return samples
 
 
@@ -155,7 +164,9 @@ def build_timeline(samples):
         window = frame_counts[start:start + 5]
         window_counts = Counter(count for count in window if count >= 2)
         supported_counts.update(count for count, frequency in window_counts.items() if frequency >= 3)
-    target_count = max(supported_counts) if supported_counts else max(counts, key=lambda count: (counts[count], count))
+    # Keep the clip-wide robust mode. Choosing the highest locally persistent
+    # count over-counts when a false person box is stable for a few seconds.
+    target_count = max(counts, key=lambda count: (counts[count], count))
     print(json.dumps({"formation_counts": dict(sorted(counts.items())),
                       "persistent_counts": sorted(supported_counts), "selected_count": target_count}), file=sys.stderr, flush=True)
     layouts = []
@@ -172,7 +183,8 @@ def build_timeline(samples):
                 candidate = [sample]
             if len(candidate) >= 2:
                 current = candidate[:]
-                layouts.append({"time": candidate[0]["time"], "points": average_points([item["points"] for item in candidate])})
+                layouts.append({"time": candidate[0]["time"], "points": average_points([item["points"] for item in candidate]),
+                                "sample_indexes": [item["index"] for item in candidate]})
                 candidate = []
             continue
         reference = average_points([item["points"] for item in current[-3:]])
@@ -184,11 +196,65 @@ def build_timeline(samples):
                 candidate.append(sample)
             else:
                 candidate = [sample]
-            if len(candidate) >= 3:
+            if len(candidate) >= 2:
                 current = candidate[:]
-                layouts.append({"time": candidate[0]["time"], "points": average_points([item["points"] for item in candidate])})
+                layouts.append({"time": candidate[0]["time"], "points": average_points([item["points"] for item in candidate]),
+                                "sample_indexes": [item["index"] for item in candidate]})
                 candidate = []
     return layouts
+
+
+def pose_positions(landmarks):
+    points = []
+    for pose in landmarks:
+        hips = [pose[index] for index in (23, 24)
+                if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
+        ankles = [pose[index] for index in (27, 28, 29, 30, 31, 32)
+                  if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
+        if not hips or not ankles:
+            continue
+        points.append({"x": min(1.0, max(0.0, sum(item.x for item in hips) / len(hips))),
+                       "y": min(1.0, max(0.0, max(item.y for item in ankles)))}
+                      )
+    return sorted(points, key=lambda point: point["x"])
+
+
+def refine_formation_positions(formations, samples, paths, root):
+    if not formations:
+        return formations
+    import mediapipe as mp
+    import numpy as np
+    from PIL import Image
+
+    set_stage(root, "refining-positions")
+    model = cached_model("pose_landmarker_lite.task", POSE_MODEL_URL)
+    options = mp.tasks.vision.PoseLandmarkerOptions(
+        base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
+        running_mode=mp.tasks.vision.RunningMode.IMAGE,
+        num_poses=10,
+        min_pose_detection_confidence=0.3,
+        min_pose_presence_confidence=0.3,
+    )
+    with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
+        for formation in formations:
+            refined = []
+            # Layouts are accepted after a few stable samples. Refine only those
+            # representative frames instead of running pose inference on the clip.
+            for index in formation.pop("sample_indexes", []):
+                with Image.open(paths[index]) as image:
+                    rgb = np.asarray(image.convert("RGB"))
+                result = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+                points = pose_positions(result.pose_landmarks)
+                if len(points) == len(formation["points"]):
+                    refined.append(points)
+                else:
+                    print(f"[formation-pose] pose-count-mismatch expected={len(formation['points'])} detected={len(points)} time={formation['time']}",
+                          file=sys.stderr, flush=True)
+                if len(refined) >= 3:
+                    break
+            if refined:
+                formation["points"] = average_points(refined)
+    return formations
 
 
 def analyze(video_id, root):
@@ -199,7 +265,14 @@ def analyze(video_id, root):
             pass
     frames = detector_frames(video_id, root)
     samples = collect_detections(frames, root)
-    return {"engine": "formation-v1", "formations": build_timeline(samples)}
+    formations = build_timeline(samples)
+    try:
+        formations = refine_formation_positions(formations, samples, frames, root)
+    except Exception as error:
+        print(f"[formation-pose] optional position refinement skipped: {error}", file=sys.stderr, flush=True)
+        for formation in formations:
+            formation.pop("sample_indexes", None)
+    return {"engine": "formation-v1", "formations": formations}
 
 
 if __name__ == "__main__":

@@ -761,7 +761,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
                 <span
                   key={index}
                   className="yp-formation-map__dot"
-                  style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%`, background: point.color }}
+                  style={{ left: `${(mirrored ? 1 - point.x : point.x) * 100}%`, top: `${point.y * 100}%`, background: point.color }}
                 />
               ))}
               {formationPoints.length === 0 && <span className="yp-formation-map__empty">···</span>}
@@ -769,7 +769,8 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
             <small>
               {formationStatus === "loading" ? "กำลังเริ่มงานวิเคราะห์… คลิปยังเล่นต่อได้" : formationStatus === "running"
                 ? formationStage === "downloading" ? "กำลังเตรียมวิดีโอ · คลิปเล่นต่อได้ตามปกติ"
-                  : formationStage === "extracting-frames" ? "กำลังเลือกภาพตัวอย่างจากคลิป · คลิปเล่นต่อได้ตามปกติ"
+                : formationStage === "extracting-frames" ? "กำลังเลือกภาพตัวอย่างจากคลิป · คลิปเล่นต่อได้ตามปกติ"
+                  : formationStage === "refining-positions" ? "กำลังปรับตำแหน่งจากจุดข้อต่อ · คลิปเล่นต่อได้ตามปกติ"
                     : "กำลังวิเคราะห์ตำแหน่งนักเต้น · คลิปเล่นต่อได้ตามปกติ"
                 : formationTimeline.length === 0 ? "ยังไม่พบรูปแบบแถวที่มั่นใจพอ"
                   : `แถว ${formationTimeline.filter((item) => item.time <= time).length} / ${formationTimeline.length} · ${formationPoints.length} คน · เปลี่ยนตามเวลา ${formatTime(time)}`}
