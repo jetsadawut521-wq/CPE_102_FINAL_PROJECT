@@ -9,6 +9,7 @@ from collections import Counter
 from pathlib import Path
 
 PERSON_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/float32/1/efficientdet_lite2.tflite"
+POSE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
 MAX_DURATION = 900
 # Two-second spacing roughly halves CPU inference for typical practice clips.
 SAMPLE_FPS = 0.5
@@ -58,6 +59,20 @@ def project_samples(samples, transform, root):
             point["x"] = min(1.0, max(0.0, float(projected[0] / projected[2])))
             point["y"] = min(1.0, max(0.0, float(projected[1] / projected[2])))
     return samples
+
+
+def project_point(point, transform):
+    import numpy as np
+
+    projected = transform @ np.asarray([point["x"], point["y"], 1.0])
+    if abs(projected[2]) < 1e-8:
+        return None
+    x, y = float(projected[0] / projected[2]), float(projected[1] / projected[2])
+    # A bad ankle estimate outside the calibrated quadrilateral can explode
+    # under perspective. Reject it and retain the detector-box fallback.
+    if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+        return None
+    return {"x": x, "y": y}
 
 
 def cached_model(filename, url):
@@ -228,10 +243,11 @@ def track_people(samples, target_count):
             initial = sorted(sorted(detections, key=lambda item: item["score"], reverse=True)[:target_count],
                              key=lambda item: item["x"])
             for track_id, detection in enumerate(initial):
-                tracks.append({"id": track_id, "x": detection["x"], "y": detection["y"],
+                tracks.append({"id": track_id, "x": detection["x"], "y": detection["y"], "box": detection["box"],
                                "vx": 0.0, "vy": 0.0, "time": sample["time"],
                                "appearance": detection["appearance"], "missing": 0})
-                assignments.append({"id": track_id, "point": {"x": detection["x"], "y": detection["y"]}, "observed": True})
+                assignments.append({"id": track_id, "point": {"x": detection["x"], "y": detection["y"]},
+                                    "box": detection["box"], "observed": True})
         else:
             pairs = []
             if detections:
@@ -257,10 +273,12 @@ def track_people(samples, target_count):
                 track["vx"] = max(-0.4, min(0.4, 0.55 * track["vx"] + 0.45 * vx))
                 track["vy"] = max(-0.4, min(0.4, 0.55 * track["vy"] + 0.45 * vy))
                 track["x"], track["y"], track["time"] = detection["x"], detection["y"], sample["time"]
+                track["box"] = detection["box"]
                 track["appearance"] = [0.7 * old + 0.3 * new for old, new in zip(track["appearance"], detection["appearance"])]
                 track["missing"] = 0
                 matched_tracks.add(track_index)
-                assignments.append({"id": track["id"], "point": {"x": detection["x"], "y": detection["y"]}, "observed": True})
+                assignments.append({"id": track["id"], "point": {"x": detection["x"], "y": detection["y"]},
+                                    "box": detection["box"], "observed": True})
             for track_index, track in enumerate(tracks):
                 if track_index in matched_tracks:
                     continue
@@ -272,7 +290,8 @@ def track_people(samples, target_count):
                     track["x"] = min(1.0, max(0.0, track["x"] + track["vx"] * dt))
                     track["y"] = min(1.0, max(0.0, track["y"] + track["vy"] * dt))
                 track["time"] = sample["time"]
-                assignments.append({"id": track["id"], "point": {"x": track["x"], "y": track["y"]}, "observed": False})
+                assignments.append({"id": track["id"], "point": {"x": track["x"], "y": track["y"]},
+                                    "box": track["box"], "observed": False})
 
         points = [{"x": track["x"], "y": track["y"], "color": track["id"] % 10,
                    "track_id": track["id"]} for track in tracks]
@@ -331,6 +350,88 @@ def build_timeline(samples):
     return layouts
 
 
+def pose_floor_positions(landmarks):
+    positions = []
+    for pose in landmarks:
+        ankles = [pose[index] for index in (27, 28)
+                  if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.35]
+        if not ankles:
+            continue
+        positions.append({"x": sum(point.x for point in ankles) / len(ankles),
+                          # The lower visible ankle is the best available
+                          # estimate of the dancer's floor contact.
+                          "y": max(point.y for point in ankles)})
+    return positions
+
+
+def refine_formation_positions(formations, samples, paths, transform, root):
+    """Replace detector-box bottoms with pose ankles at stable formation frames."""
+    if not formations:
+        return formations
+    import mediapipe as mp
+    import numpy as np
+    from PIL import Image
+    from scipy.optimize import linear_sum_assignment
+
+    set_stage(root, "refining-positions")
+    model = cached_model("pose_landmarker_lite.task", POSE_MODEL_URL)
+    options = mp.tasks.vision.PoseLandmarkerOptions(
+        base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
+        running_mode=mp.tasks.vision.RunningMode.IMAGE,
+        num_poses=16,
+        min_pose_detection_confidence=0.3,
+        min_pose_presence_confidence=0.3,
+    )
+    # One representative frame per layout keeps the refinement bounded while
+    # avoiding repeated pose inference for every sampled frame.
+    with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
+        for formation in formations:
+            indexes = formation.get("sample_indexes", [])
+            if not indexes:
+                continue
+            index = indexes[0]
+            if index >= len(paths) or index >= len(samples):
+                continue
+            observed = [item for item in samples[index].get("assignments", []) if item["observed"]]
+            if not observed:
+                continue
+            with Image.open(paths[index]) as image:
+                rgb = np.asarray(image.convert("RGB"))
+            result = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+            poses = pose_floor_positions(result.pose_landmarks)
+            if not poses:
+                continue
+            costs = np.full((len(poses), len(observed)), 1e3, dtype=float)
+            for pose_index, pose in enumerate(poses):
+                for observed_index, item in enumerate(observed):
+                    left, top, right, bottom = item["box"]
+                    box_width = max(0.025, right - left)
+                    box_height = max(0.08, bottom - top)
+                    # Compare pose ankles to each detected person's lower box
+                    # area, normalized by that person's size so depth changes
+                    # and close dancers do not dominate the matching.
+                    dx = abs(pose["x"] - (left + right) / 2) / box_width
+                    dy = max(0.0, bottom - pose["y"]) / box_height
+                    if dx <= 0.7 and dy <= 0.45:
+                        costs[pose_index, observed_index] = dx + 0.6 * dy
+            rows, columns = linear_sum_assignment(costs)
+            aligned = {}
+            for row, column in zip(rows, columns):
+                if costs[row, column] >= 1.0:
+                    continue
+                track_id = observed[column]["id"]
+                projected = project_point(poses[row], transform)
+                if projected:
+                    aligned[track_id] = projected
+            # Keep the box-derived position only for people whose ankles were
+            # not visible or could not be matched confidently.
+            for point in formation["points"]:
+                refined = aligned.get(point.get("track_id"))
+                if refined:
+                    point["x"], point["y"] = refined["x"], refined["y"]
+    return formations
+
+
 def analyze(video_id, root, stage_corners):
     transform = stage_projection(stage_corners)
     if os.name == "posix":
@@ -346,9 +447,13 @@ def analyze(video_id, root, stage_corners):
     # locations are transformed using the calibrated four-corner quadrilateral.
     samples = project_samples(samples, transform, root)
     formations = build_timeline(samples)
+    try:
+        formations = refine_formation_positions(formations, samples, frames, transform, root)
+    except Exception as error:
+        print(f"[formation-pose] ankle refinement skipped: {error}", file=sys.stderr, flush=True)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v2", "formations": formations}
+    return {"engine": "formation-v3", "formations": formations}
 
 
 if __name__ == "__main__":
