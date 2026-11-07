@@ -100,7 +100,7 @@ def read_cache(video_id):
 
 def formation_cache_path(video_id):
     # Keep results from earlier count and position algorithms out of the new one.
-    return CACHE_DIR / f"formation-v8-{video_id}.json"
+    return CACHE_DIR / f"formation-v9-{video_id}.json"
 
 
 def read_formation_cache(video_id):

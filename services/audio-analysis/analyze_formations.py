@@ -263,7 +263,10 @@ def build_timeline(samples):
                                 "sample_indexes": [item["index"] for item in candidate]})
                 candidate = []
             continue
-        reference = average_points([item["points"] for item in current[-3:]])
+        # Compare against the last committed layout, not a sliding window. A
+        # sliding reference gradually follows slow formation changes and can
+        # absorb them without ever creating a new layout.
+        reference = average_points([item["points"] for item in current[:2]])
         if point_distance(reference, points) <= 0.12:
             current.append(sample)
             candidate = []
@@ -285,13 +288,13 @@ def pose_positions(landmarks):
     for pose in landmarks:
         hips = [pose[index] for index in (23, 24)
                 if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
-        ankles = [pose[index] for index in (27, 28, 29, 30, 31, 32)
-                  if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
-        if not hips or not ankles:
+        shoulders = [pose[index] for index in (11, 12)
+                     if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.2]
+        if not hips:
             continue
+        torso_y = [item.y for item in hips + shoulders] if shoulders else [item.y for item in hips]
         points.append({"x": min(1.0, max(0.0, sum(item.x for item in hips) / len(hips))),
-                       "y": min(1.0, max(0.0, max(item.y for item in ankles)))}
-                      )
+                       "y": min(1.0, max(0.0, sum(torso_y) / len(torso_y)))})
     return sorted(points, key=lambda point: point["x"])
 
 
@@ -326,7 +329,7 @@ def refine_formation_positions(formations, samples, paths, root):
                     from scipy.optimize import linear_sum_assignment
                     import numpy as np
                     costs = np.asarray([[(pose["x"] - item["point"]["x"]) ** 2 +
-                                         (pose["y"] - item["point"]["y"]) ** 2 for item in observed]
+                                         0.15 * (pose["y"] - item["point"]["y"]) ** 2 for item in observed]
                                         for pose in points])
                     rows, columns = linear_sum_assignment(costs)
                     aligned = [None] * len(formation["points"])
