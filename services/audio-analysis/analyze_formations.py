@@ -11,7 +11,8 @@ from pathlib import Path
 PERSON_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/float32/1/efficientdet_lite2.tflite"
 POSE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
 MAX_DURATION = 900
-SAMPLE_FPS = 1
+# Two-second spacing roughly halves CPU inference for typical practice clips.
+SAMPLE_FPS = 0.5
 
 
 def set_stage(root, stage):
@@ -163,7 +164,9 @@ def build_timeline(samples):
         window = frame_counts[start:start + 5]
         window_counts = Counter(count for count in window if count >= 2)
         supported_counts.update(count for count, frequency in window_counts.items() if frequency >= 3)
-    target_count = max(supported_counts) if supported_counts else max(counts, key=lambda count: (counts[count], count))
+    # Keep the clip-wide robust mode. Choosing the highest locally persistent
+    # count over-counts when a false person box is stable for a few seconds.
+    target_count = max(counts, key=lambda count: (counts[count], count))
     print(json.dumps({"formation_counts": dict(sorted(counts.items())),
                       "persistent_counts": sorted(supported_counts), "selected_count": target_count}), file=sys.stderr, flush=True)
     layouts = []
@@ -193,7 +196,7 @@ def build_timeline(samples):
                 candidate.append(sample)
             else:
                 candidate = [sample]
-            if len(candidate) >= 3:
+            if len(candidate) >= 2:
                 current = candidate[:]
                 layouts.append({"time": candidate[0]["time"], "points": average_points([item["points"] for item in candidate]),
                                 "sample_indexes": [item["index"] for item in candidate]})
@@ -264,7 +267,7 @@ def analyze(video_id, root):
     samples = collect_detections(frames, root)
     formations = build_timeline(samples)
     try:
-        formations = refine_formation_positions(formations, frames, root)
+        formations = refine_formation_positions(formations, samples, frames, root)
     except Exception as error:
         print(f"[formation-pose] optional position refinement skipped: {error}", file=sys.stderr, flush=True)
         for formation in formations:
