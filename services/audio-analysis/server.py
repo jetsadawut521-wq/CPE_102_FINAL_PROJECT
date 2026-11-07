@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 TOKEN = os.environ.get("AUDIO_ANALYSIS_TOKEN", "")
 JOBS = {}
 LOCK = threading.Lock()
+DOWNLOAD_LOCK = threading.Lock()
 POOL = ThreadPoolExecutor(max_workers=1)
 FORMATION_POOL = ThreadPoolExecutor(max_workers=1)
 RUNNER = Path(__file__).with_name("analyze.py")
@@ -142,10 +143,13 @@ def run_formation_job(video_id):
     tempdir = tempfile.TemporaryDirectory(prefix="muverse-formation-")
     process = None
     errors = None
+    download_lock_held = False
     began = time.monotonic()
     try:
         root = Path(tempdir.name)
         errors = (root / "worker.log").open("w+b")
+        DOWNLOAD_LOCK.acquire()
+        download_lock_held = True
         env = os.environ.copy()
         threads = str(max(1, min(2, cpu_threads())))
         env["FORMATION_THREADS"] = threads
@@ -163,6 +167,9 @@ def run_formation_job(video_id):
                 if stage:
                     with LOCK:
                         FORMATION_JOBS[video_id]["stage"] = stage
+                    if stage != "downloading" and download_lock_held:
+                        DOWNLOAD_LOCK.release()
+                        download_lock_held = False
                 if time.monotonic() - began > FORMATION_JOB_TIMEOUT:
                     raise RuntimeError("timeout")
         if process.returncode:
@@ -184,6 +191,8 @@ def run_formation_job(video_id):
         reason = str(error) if str(error) in FORMATION_ERRORS else "analysis-failed"
         job = {"status": "failed", "reason": reason, "stage": read_stage(Path(tempdir.name)) or "unknown"}
     finally:
+        if download_lock_held:
+            DOWNLOAD_LOCK.release()
         if errors is not None:
             errors.seek(max(0, errors.seek(0, 2) - 4096))
             tail = errors.read().decode("utf-8", errors="replace")
@@ -253,6 +262,7 @@ def run_job(video_id):
         JOBS[video_id].update(status="processing", stage="downloading", updated=time.time())
     process = None
     errors = None
+    download_lock_held = False
     began = time.monotonic()
     tempdir = tempfile.TemporaryDirectory(prefix="muverse-audio-")
     try:
@@ -264,6 +274,8 @@ def run_job(video_id):
         for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "AUDIO_ANALYSIS_THREADS"):
             env[name] = threads
         errors = (root / "worker.log").open("w+b")
+        DOWNLOAD_LOCK.acquire()
+        download_lock_held = True
         process = subprocess.Popen([sys.executable, str(RUNNER), video_id, str(root)],
                                    stdout=subprocess.PIPE, stderr=errors, env=env,
                                    start_new_session=(os.name != "nt"))
@@ -294,6 +306,9 @@ def run_job(video_id):
                         with LOCK:
                             previous = JOBS[video_id].get("stage")
                             JOBS[video_id]["stage"] = stage
+                        if stage != "downloading" and download_lock_held:
+                            DOWNLOAD_LOCK.release()
+                            download_lock_held = False
                         if stage != previous:
                             print(f"[audio] {video_id}: {stage} (elapsed {time.monotonic() - began:.1f}s)", flush=True)
                 except OSError:
@@ -327,6 +342,8 @@ def run_job(video_id):
         reason = str(error) if str(error) in ERROR_CODES | {"cancelled", "timeout"} else "audio-analysis-unavailable"
         job = {"status": "failed", "reason": reason, "stage": JOBS.get(video_id, {}).get("stage", "unknown")}
     finally:
+        if download_lock_held:
+            DOWNLOAD_LOCK.release()
         if errors is not None:
             if job.get("status") == "failed":
                 errors.seek(max(0, errors.seek(0, 2) - 4096))
