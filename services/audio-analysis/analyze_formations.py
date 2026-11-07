@@ -76,7 +76,8 @@ def average_points(samples):
     size = len(samples[0])
     return [{"x": sum(sample[i]["x"] for sample in samples) / len(samples),
              "y": sum(sample[i]["y"] for sample in samples) / len(samples),
-             "color": i % 6} for i in range(size)]
+             "color": samples[0][i].get("color", i % 10),
+             "track_id": samples[0][i].get("track_id", i)} for i in range(size)]
 
 
 def collect_detections(paths, root):
@@ -119,11 +120,15 @@ def collect_detections(paths, root):
                 box_height = bottom - top
                 if box_height < 0.08 or box_width < 0.02:
                     continue
+                crop = rgb[int(top * height + box_height * height * 0.18):int(top * height + box_height * height * 0.65),
+                           int(left * width + box_width * width * 0.25):int(left * width + box_width * width * 0.75)]
+                appearance = crop.reshape(-1, 3).mean(axis=0).astype(float) / 255 if crop.size else np.zeros(3)
                 # The bottom center approximates where the dancer meets the floor;
                 # a fixed 92% offset floats dots above the floor by different
                 # amounts as bounding-box heights change with pose and distance.
                 candidates.append({"x": (left + right) / 2, "y": bottom,
-                                   "score": category.score, "box": (left, top, right, bottom)})
+                                   "score": category.score, "box": (left, top, right, bottom),
+                                   "appearance": appearance.tolist()})
             candidates.sort(key=lambda point: point["score"], reverse=True)
             detections = []
             for candidate in candidates:
@@ -140,35 +145,106 @@ def collect_detections(paths, root):
                         break
                 if not duplicate:
                     detections.append(candidate)
-            detections.sort(key=lambda point: point["x"])
-            detections = [{"x": point["x"], "y": point["y"]} for point in detections]
             samples.append({"index": index, "time": index / SAMPLE_FPS, "points": detections})
     return samples
 
 
+def choose_target_count(samples):
+    counts = Counter(len(sample["points"]) for sample in samples if len(sample["points"]) >= 2)
+    if not counts:
+        return 0
+    supported = set()
+    frame_counts = [len(sample["points"]) for sample in samples]
+    for start in range(max(1, len(frame_counts) - 4)):
+        window = Counter(count for count in frame_counts[start:start + 5] if count >= 2)
+        supported.update(count for count, frequency in window.items() if frequency >= 3)
+    target = max(counts, key=lambda count: (counts[count], count))
+    print(json.dumps({"formation_counts": dict(sorted(counts.items())),
+                      "persistent_counts": sorted(supported), "selected_count": target}), file=sys.stderr, flush=True)
+    return target
+
+
+def track_people(samples, target_count):
+    from scipy.optimize import linear_sum_assignment
+    import numpy as np
+
+    tracks = []
+    tracked_samples = []
+    for sample in samples:
+        detections = sample["points"]
+        assignments = []
+        if not tracks:
+            if len(detections) < target_count:
+                tracked_samples.append({**sample, "points": [], "assignments": []})
+                continue
+            initial = sorted(sorted(detections, key=lambda item: item["score"], reverse=True)[:target_count],
+                             key=lambda item: item["x"])
+            for track_id, detection in enumerate(initial):
+                tracks.append({"id": track_id, "x": detection["x"], "y": detection["y"],
+                               "vx": 0.0, "vy": 0.0, "time": sample["time"],
+                               "appearance": detection["appearance"], "missing": 0})
+                assignments.append({"id": track_id, "point": {"x": detection["x"], "y": detection["y"]}, "observed": True})
+        else:
+            pairs = []
+            if detections:
+                costs = np.full((len(tracks), len(detections)), 1e3, dtype=float)
+                for track_index, track in enumerate(tracks):
+                    dt = max(0.1, sample["time"] - track["time"])
+                    px = min(1.0, max(0.0, track["x"] + track["vx"] * dt))
+                    py = min(1.0, max(0.0, track["y"] + track["vy"] * dt))
+                    for detection_index, detection in enumerate(detections):
+                        spatial = ((px - detection["x"]) ** 2 + (py - detection["y"]) ** 2) ** 0.5
+                        appearance = sum((a - b) ** 2 for a, b in zip(track["appearance"], detection["appearance"])) ** 0.5
+                        if spatial <= min(0.48, 0.22 + dt * 0.09):
+                            costs[track_index, detection_index] = spatial + appearance * 0.18
+                rows, columns = linear_sum_assignment(costs)
+                pairs = [(row, column) for row, column in zip(rows, columns) if costs[row, column] < 1e3]
+            matched_tracks = set()
+            for track_index, detection_index in pairs:
+                track = tracks[track_index]
+                detection = detections[detection_index]
+                dt = max(0.1, sample["time"] - track["time"])
+                vx = (detection["x"] - track["x"]) / dt
+                vy = (detection["y"] - track["y"]) / dt
+                track["vx"] = max(-0.4, min(0.4, 0.55 * track["vx"] + 0.45 * vx))
+                track["vy"] = max(-0.4, min(0.4, 0.55 * track["vy"] + 0.45 * vy))
+                track["x"], track["y"], track["time"] = detection["x"], detection["y"], sample["time"]
+                track["appearance"] = [0.7 * old + 0.3 * new for old, new in zip(track["appearance"], detection["appearance"])]
+                track["missing"] = 0
+                matched_tracks.add(track_index)
+                assignments.append({"id": track["id"], "point": {"x": detection["x"], "y": detection["y"]}, "observed": True})
+            for track_index, track in enumerate(tracks):
+                if track_index in matched_tracks:
+                    continue
+                track["missing"] += 1
+                track["vx"] *= 0.35
+                track["vy"] *= 0.35
+                if track["missing"] <= 1:
+                    dt = max(0.1, sample["time"] - track["time"])
+                    track["x"] = min(1.0, max(0.0, track["x"] + track["vx"] * dt))
+                    track["y"] = min(1.0, max(0.0, track["y"] + track["vy"] * dt))
+                track["time"] = sample["time"]
+                assignments.append({"id": track["id"], "point": {"x": track["x"], "y": track["y"]}, "observed": False})
+
+        points = [{"x": track["x"], "y": track["y"], "color": track["id"] % 10,
+                   "track_id": track["id"]} for track in tracks]
+        tracked_samples.append({"index": sample["index"], "time": sample["time"],
+                                "points": points, "assignments": assignments})
+    return tracked_samples
+
+
 def build_timeline(samples):
-    # Collapse frame-level jitter into stable layouts. A transition is accepted
-    # only after three successive samples agree on dancer count and geometry.
+    # Collapse frame-level jitter into stable layouts. IDs remain fixed even
+    # when dancers cross, so a transition moves each dancer's own dot.
     if not samples:
         return []
     frame_counts = [len(sample["points"]) for sample in samples]
     counts = Counter(count for count in frame_counts if count >= 2)
     if not counts:
         return []
-    # Prefer the largest count that is repeatedly supported in nearby samples.
-    # A clip-wide mode systematically undercounts when a dancer is often hidden
-    # behind another dancer; requiring 3 detections within a 5-second window
-    # avoids letting a one-frame false positive increase the roster.
-    supported_counts = set()
-    for start in range(max(1, len(frame_counts) - 4)):
-        window = frame_counts[start:start + 5]
-        window_counts = Counter(count for count in window if count >= 2)
-        supported_counts.update(count for count, frequency in window_counts.items() if frequency >= 3)
-    # Keep the clip-wide robust mode. Choosing the highest locally persistent
-    # count over-counts when a false person box is stable for a few seconds.
+    # Every tracked frame has the same number of identity slots. Ignore the
+    # initial frames before tracking found a complete group.
     target_count = max(counts, key=lambda count: (counts[count], count))
-    print(json.dumps({"formation_counts": dict(sorted(counts.items())),
-                      "persistent_counts": sorted(supported_counts), "selected_count": target_count}), file=sys.stderr, flush=True)
     layouts = []
     current = None
     candidate = []
@@ -245,8 +321,19 @@ def refine_formation_positions(formations, samples, paths, root):
                     rgb = np.asarray(image.convert("RGB"))
                 result = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
                 points = pose_positions(result.pose_landmarks)
-                if len(points) == len(formation["points"]):
-                    refined.append(points)
+                observed = [item for item in samples[index].get("assignments", []) if item["observed"]]
+                if len(points) == len(observed) == len(formation["points"]):
+                    from scipy.optimize import linear_sum_assignment
+                    import numpy as np
+                    costs = np.asarray([[(pose["x"] - item["point"]["x"]) ** 2 +
+                                         (pose["y"] - item["point"]["y"]) ** 2 for item in observed]
+                                        for pose in points])
+                    rows, columns = linear_sum_assignment(costs)
+                    aligned = [None] * len(formation["points"])
+                    for row, column in zip(rows, columns):
+                        aligned[observed[column]["id"]] = points[row]
+                    if all(point is not None for point in aligned):
+                        refined.append(aligned)
                 else:
                     print(f"[formation-pose] pose-count-mismatch expected={len(formation['points'])} detected={len(points)} time={formation['time']}",
                           file=sys.stderr, flush=True)
@@ -265,6 +352,8 @@ def analyze(video_id, root):
             pass
     frames = detector_frames(video_id, root)
     samples = collect_detections(frames, root)
+    target_count = choose_target_count(samples)
+    samples = track_people(samples, target_count)
     formations = build_timeline(samples)
     try:
         formations = refine_formation_positions(formations, samples, frames, root)

@@ -62,7 +62,7 @@ function isTextEntry(el: EventTarget | null): boolean {
 type FlashState = { text: string; pos: "left" | "right" | "center" };
 type FormationPoint = { x: number; y: number; color: string };
 type FormationSnapshot = { time: number; points: Array<{ x: number; y: number; color: number }> };
-const FORMATION_COLORS = ["#ffe600", "#ff5b9a", "#4de1ff", "#a78bfa", "#ff9f43", "#68e39a"];
+const FORMATION_COLORS = ["#ffe600", "#ff5b9a", "#4de1ff", "#a78bfa", "#ff9f43", "#68e39a", "#ff6b6b", "#5eead4", "#c084fc", "#facc15"];
 
 export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onError, loopOne = false, highlights = NO_HIGHLIGHTS }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
