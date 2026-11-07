@@ -71,21 +71,25 @@ class JobsTest(unittest.TestCase):
         self.assertEqual(worker.JOBS["RXQCY_zxz-E"]["status"], "failed")
         self.assertNotIn("sensitive", json.dumps(worker.JOBS))
 
-    def test_disk_cache_survives_worker_restart_without_scheduling_analysis(self):
-        worker.save_cache("RXQCY_zxz-E", {"segments": [{"start": 64, "end": 80.9, "label": "chorus"}]})
-        worker.JOBS.clear()
+    def test_persisted_audio_cache_is_not_used(self):
+        worker.CACHE_DIR.mkdir(exist_ok=True)
+        (worker.CACHE_DIR / "fast-repeat-v3-RXQCY_zxz-E.json").write_text(json.dumps({
+            "updated": time.time(), "segments": [{"start": 64, "end": 80.9, "label": "chorus"}]
+        }))
         status, data = self.post("/jobs/RXQCY_zxz-E")
         self.assertEqual(status, 200)
-        self.assertEqual(data["status"], "ready")
-        self.assertTrue(data["cached"])
-        self.pool.submit.assert_not_called()
+        self.assertEqual(data["status"], "queued")
+        self.pool.submit.assert_called_once()
 
-    def test_expired_and_corrupt_cache_are_not_returned_as_highlights(self):
-        path = worker.CACHE_DIR / "fold0-v1-RXQCY_zxz-E.json"
-        for contents in ["broken json", json.dumps({"updated": 0, "segments": []}),
-                         json.dumps({"updated": time.time(), "segments": [{"start": -1, "end": 20, "label": "chorus"}]})]:
-            path.write_text(contents)
-            self.assertIsNone(worker.read_cache("RXQCY_zxz-E"))
+    def test_audio_cache_cleanup_keeps_formation_cache(self):
+        worker.CACHE_DIR.mkdir(exist_ok=True)
+        audio = worker.CACHE_DIR / "fast-repeat-v2-RXQCY_zxz-E.json"
+        formation = worker.CACHE_DIR / "formation-v12-RXQCY_zxz-E.json"
+        audio.write_text("old audio result")
+        formation.write_text("formation result")
+        worker.clear_audio_cache()
+        self.assertFalse(audio.exists())
+        self.assertTrue(formation.exists())
 
     def test_abandoned_queued_job_never_starts_download_or_model(self):
         worker.JOBS["RXQCY_zxz-E"] = {"status": "queued", "updated": time.time(), "lastRequested": time.time() - 31}
@@ -103,7 +107,6 @@ class JobsTest(unittest.TestCase):
             worker.run_job("RXQCY_zxz-E")
         stop.assert_called_once_with(process)
         self.assertEqual(worker.JOBS["RXQCY_zxz-E"]["reason"], "cancelled")
-        self.assertIsNone(worker.read_cache("RXQCY_zxz-E"))
 
     def test_hard_deadline_is_reported_as_timeout(self):
         process = Mock()
@@ -116,13 +119,13 @@ class JobsTest(unittest.TestCase):
         stop.assert_called_once()
         self.assertEqual(worker.JOBS["RXQCY_zxz-E"]["reason"], "timeout")
 
-    def test_success_is_persisted_and_threads_are_bounded(self):
+    def test_success_is_held_in_memory_only_and_threads_are_bounded(self):
         process = Mock(returncode=0)
         process.communicate.return_value = (b'{"segments":[{"start":64,"end":80.9,"label":"chorus"}]}', b'')
         with patch.object(worker.subprocess, "Popen", return_value=process) as spawn:
             worker.run_job("RXQCY_zxz-E")
         self.assertEqual(worker.JOBS["RXQCY_zxz-E"]["status"], "ready")
-        self.assertIsNotNone(worker.read_cache("RXQCY_zxz-E"))
+        self.assertEqual(list(worker.CACHE_DIR.glob("fast-repeat-*-RXQCY_zxz-E.json")), [])
         self.assertEqual(spawn.call_args.kwargs["env"]["OMP_NUM_THREADS"], str(worker.cpu_threads()))
         self.assertFalse(Path(spawn.call_args.args[0][-1]).exists())
 
@@ -135,27 +138,6 @@ class JobsTest(unittest.TestCase):
             self.assertEqual(worker.cpu_threads(), 2)
         with patch.dict(worker.os.environ, {"AUDIO_ANALYSIS_THREADS": "0"}):
             self.assertEqual(worker.cpu_threads(), 1)
-
-    def test_fast_and_full_cache_are_separate_and_full_result_is_preferred(self):
-        worker.save_cache("RXQCY_zxz-E", {"engine": "fast", "segments": [{"start": 32, "end": 56, "label": "chorus"}]})
-        with patch.object(worker, "ENGINE", "fast"):
-            self.assertEqual(worker.read_cache("RXQCY_zxz-E")["engine"], "fast")
-        with patch.object(worker, "ENGINE", "full"):
-            self.assertIsNone(worker.read_cache("RXQCY_zxz-E"))
-        worker.save_cache("RXQCY_zxz-E", {"engine": "full", "segments": [{"start": 64, "end": 80, "label": "chorus"}]})
-        with patch.object(worker, "ENGINE", "fast"):
-            self.assertEqual(worker.read_cache("RXQCY_zxz-E")["engine"], "full")
-            self.assertEqual(worker.read_cache("RXQCY_zxz-E")["segments"][0]["start"], 64)
-
-    def test_empty_fast_results_expire_in_five_minutes_and_old_profile_is_ignored(self):
-        worker.CACHE_DIR.mkdir(exist_ok=True)
-        empty = {"updated": time.time() - 301, "segments": []}
-        (worker.CACHE_DIR / f"{worker.FAST_PROFILE}-RXQCY_zxz-E.json").write_text(json.dumps(empty))
-        self.assertIsNone(worker.read_cache("RXQCY_zxz-E"))
-        old = {"updated": time.time(), "segments": [{"start": 32, "end": 56, "label": "chorus"}]}
-        for version in (1, 2):
-            (worker.CACHE_DIR / f"fast-repeat-v{version}-RXQCY_zxz-E.json").write_text(json.dumps(old))
-        self.assertIsNone(worker.read_cache("RXQCY_zxz-E"))
 
     def test_fast_failure_keeps_specific_reason_and_stage_even_when_it_exits_immediately(self):
         process = Mock(returncode=1)

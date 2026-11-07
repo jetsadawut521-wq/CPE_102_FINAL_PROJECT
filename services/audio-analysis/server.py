@@ -24,8 +24,6 @@ FORMATION_POOL = ThreadPoolExecutor(max_workers=1)
 RUNNER = Path(__file__).with_name("analyze.py")
 FORMATION_RUNNER = Path(__file__).with_name("analyze_formations.py")
 CACHE_DIR = Path(os.environ.get("AUDIO_ANALYSIS_CACHE", str(Path.home() / ".cache" / "muverse-audio")))
-CACHE_TTL = 30 * 86400
-FAST_PROFILE = "fast-repeat-v3"
 ENGINE = os.environ.get("AUDIO_ANALYSIS_ENGINE", "fast")
 if ENGINE not in ("fast", "full"):
     raise ValueError("AUDIO_ANALYSIS_ENGINE must be fast or full")
@@ -40,6 +38,16 @@ FORMATION_ERRORS = {"dependency-missing", "tool-missing", "download-timeout", "d
 FORMATION_JOBS = {}
 FORMATION_CACHE_TTL = 30 * 86400
 FORMATION_JOB_TIMEOUT = 900
+
+
+def clear_audio_cache():
+    """Remove persisted audio-analysis results; only formation timelines are retained."""
+    for pattern in ("fast-repeat-v*-*.json", "fast-repeat-v*-*.tmp", "fold0-v1-*.json", "fold0-v1-*.tmp"):
+        for path in CACHE_DIR.glob(pattern):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def read_stage(root):
@@ -76,50 +84,6 @@ def valid_segments(value):
                isinstance(s.get("start"), (int, float)) and isinstance(s.get("end"), (int, float)) and
                math.isfinite(s["start"]) and math.isfinite(s["end"]) and
                0 <= s["start"] < s["end"] <= 900 for s in value)
-
-
-def read_cache(video_id):
-    # Prefer an already available full-model result. Never label a fast result
-    # as All-In-One, and never let a fast cache overwrite a full-model result.
-    profiles = [("fold0-v1", "full")]
-    if ENGINE == "fast":
-        profiles.append((FAST_PROFILE, "fast"))
-    empty_cache = None
-    for profile, engine in profiles:
-        try:
-            path = CACHE_DIR / f"{profile}-{video_id}.json"
-            if path.stat().st_size > 100000:
-                continue
-            data = json.loads(path.read_text())
-            ttl = 300 if engine == "fast" and not data.get("segments") else CACHE_TTL
-            if time.time() - data["updated"] > ttl or not valid_segments(data["segments"]):
-                continue
-            cached = {"status": "ready", "engine": engine, "segments": data["segments"],
-                      "updated": data["updated"], "cached": True}
-            if not data["segments"]:
-                empty_cache = cached
-                continue
-            return cached
-        except (OSError, ValueError, TypeError, KeyError):
-            continue
-    # Profile v3 tightened boundary selection and intentionally invalidated
-    # v1/v2 results. Keep a previously successful range as a fallback only
-    # when the current full/v3 analyzers have no result for this clip.
-    if ENGINE == "fast":
-        for version in ("v2", "v1"):
-            try:
-                path = CACHE_DIR / f"fast-repeat-{version}-{video_id}.json"
-                if path.stat().st_size > 100000:
-                    continue
-                data = json.loads(path.read_text())
-                if (time.time() - data["updated"] > CACHE_TTL or not data.get("segments") or
-                        not valid_segments(data["segments"])):
-                    continue
-                return {"status": "ready", "engine": "fast", "segments": data["segments"],
-                        "updated": data["updated"], "cached": True, "legacyCache": True}
-            except (OSError, ValueError, TypeError, KeyError):
-                continue
-    return empty_cache
 
 
 def formation_cache_path(video_id):
@@ -234,21 +198,6 @@ def run_formation_job(video_id):
     print(f"[formation] {video_id}: {job['status']} ({time.monotonic() - began:.1f}s) {job.get('reason', '')}", flush=True)
 
 
-def save_cache(video_id, job):
-    try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        profile = FAST_PROFILE if job.get("engine", ENGINE) == "fast" else "fold0-v1"
-        path = CACHE_DIR / f"{profile}-{video_id}.json"
-        temp = path.with_suffix(".tmp")
-        temp.write_text(json.dumps({"updated": time.time(), "segments": job["segments"]}))
-        temp.replace(path)
-        files = sorted([*CACHE_DIR.glob("fast-repeat-v[0-9]*-*.json"), *CACHE_DIR.glob("fold0-v1-*.json")], key=lambda p: p.stat().st_mtime)
-        for old in files[:-500]:
-            old.unlink(missing_ok=True)
-    except OSError:
-        pass  # A read-only/full cache must never lose a successful analysis.
-
-
 def abandoned(video_id):
     with LOCK:
         return time.time() - JOBS.get(video_id, {}).get("lastRequested", time.time()) > LEASE_SECONDS
@@ -354,7 +303,6 @@ def run_job(video_id):
             summary = {k: v for k, v in result["diagnostics"].items() if k in ("reason", "candidatePairs", "eligibleFamilies") and isinstance(v, (str, int))}
             print(f"[audio] {video_id}: fast summary {json.dumps(summary)}", flush=True)
         job = {"status": "ready", "engine": ENGINE, "segments": result["segments"]}
-        save_cache(video_id, job)
     except Exception as error:
         if process is not None:
             stop_process(process)
@@ -422,17 +370,9 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             now = time.time()
             for key, job in list(JOBS.items()):
-                ttl = failure_ttl(job) if job["status"] == "failed" else 86400
+                ttl = failure_ttl(job) if job["status"] == "failed" else 300
                 if job["status"] in ("ready", "failed") and now - job["updated"] > ttl:
                     del JOBS[key]
-            if video_id not in JOBS:
-                cached = read_cache(video_id)
-                if cached is not None:
-                    if len(JOBS) >= 128:
-                        completed = [k for k, j in JOBS.items() if j["status"] in ("ready", "failed")]
-                        if completed:
-                            del JOBS[min(completed, key=lambda k: JOBS[k]["updated"])]
-                    JOBS[video_id] = cached
             if video_id not in JOBS:
                 if sum(j["status"] in ("queued", "processing") for j in JOBS.values()) >= 8:
                     return self.respond(429, {"status": "busy", "engine": ENGINE})
@@ -469,4 +409,5 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    clear_audio_cache()
     ThreadingHTTPServer(("127.0.0.1", int(os.environ.get("AUDIO_ANALYSIS_PORT", "8765"))), Handler).serve_forever()
