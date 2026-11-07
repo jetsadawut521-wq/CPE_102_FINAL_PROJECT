@@ -300,7 +300,9 @@ def run_job(video_id):
         if not valid_segments(result["segments"]):
             raise RuntimeError("invalid-result")
         if ENGINE == "fast" and isinstance(result.get("diagnostics"), dict):
-            summary = {k: v for k, v in result["diagnostics"].items() if k in ("reason", "candidatePairs", "eligibleFamilies") and isinstance(v, (str, int))}
+            summary = {k: v for k, v in result["diagnostics"].items()
+                       if k in ("reason", "candidatePairs", "eligibleFamilies", "relaxedCandidatePairs", "relaxedEligibleFamilies")
+                       and isinstance(v, (str, int))}
             print(f"[audio] {video_id}: fast summary {json.dumps(summary)}", flush=True)
         job = {"status": "ready", "engine": ENGINE, "segments": result["segments"]}
     except Exception as error:

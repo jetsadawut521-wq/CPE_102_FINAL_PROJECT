@@ -120,7 +120,7 @@ def refine_boundaries(spans, novelty, energy):
     return refined
 
 
-def repeated_sections(data, duration, diagnostics=None):
+def repeated_sections(data, duration, diagnostics=None, similarity_threshold=0.78, allow_relaxed=True):
     if diagnostics is None:
         diagnostics = {}
     if data is None:
@@ -144,7 +144,7 @@ def repeated_sections(data, duration, diagnostics=None):
     for lag in range(max(round(14 / STEP), n // 10), n - round(12 / STEP)):
         diagonal = np.diagonal(similarity, offset=lag)
         smooth = uniform_filter1d(diagonal, size=round(2.5 / STEP) | 1, mode="nearest")
-        mask = binary_closing(smooth > 0.78, structure=np.ones(round(1 / STEP) + 1))
+        mask = binary_closing(smooth > similarity_threshold, structure=np.ones(round(1 / STEP) + 1))
         edges = np.diff(np.r_[False, mask, False].astype(np.int8))
         for start, end in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)):
             if (end - start) * STEP < 12:
@@ -158,7 +158,7 @@ def repeated_sections(data, duration, diagnostics=None):
                 if not 12 <= length <= 60:
                     continue
                 mean = float(diagonal[left:right].mean())
-                if mean < 0.78:
+                if mean < similarity_threshold:
                     continue
                 loudness = float(np.mean(energy[left:right]))
                 rank = float(np.mean(energy <= loudness))
@@ -184,6 +184,15 @@ def repeated_sections(data, duration, diagnostics=None):
                   sum(b - a for a, b in g["spans"]) * STEP < duration * 0.65]
     diagnostics["eligibleFamilies"] = len(candidates)
     if not candidates:
+        if allow_relaxed and similarity_threshold > 0.68:
+            relaxed_diagnostics = {}
+            segments = repeated_sections(data, duration, relaxed_diagnostics,
+                                        similarity_threshold=0.68, allow_relaxed=False)
+            diagnostics["relaxedCandidatePairs"] = relaxed_diagnostics.get("candidatePairs", 0)
+            diagnostics["relaxedEligibleFamilies"] = relaxed_diagnostics.get("eligibleFamilies", 0)
+            if segments:
+                diagnostics["reason"] = "repeat-found-relaxed"
+                return segments
         diagnostics["reason"] = "no-eligible-repeat"
         return []
     best = max(candidates, key=lambda g: g["score"] + 0.04 * min(len(g["spans"]) - 2, 2))
