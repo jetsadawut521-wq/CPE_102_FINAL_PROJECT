@@ -846,7 +846,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
           </button>
           <small>
             {calibrationArmed
-              ? "หยุดคลิปไว้ แล้วคลิกมุมพื้นเวทีตามเข็มนาฬิกา: มุมไกลซ้าย → ไกลขวา → ใกล้ขวา → ใกล้ซ้าย"
+              ? "หยุดคลิปไว้ คลิกบนพื้นเท่านั้น: 1 ไกลซ้ายตรงรอยต่อผนัง-พื้น → 2 ไกลขวาตรงรอยต่อผนัง-พื้น → 3 ใกล้ขวา → 4 ใกล้ซ้าย (อย่าคลิกบนผนัง)"
               : stageCorners.length !== 4 && formationStatus === "off"
                 ? "ตั้งค่าพื้นเวที 4 มุมก่อน เพื่อแปลงตำแหน่งเท้าเป็นแผนผังมองจากด้านบน"
               : ["loading", "running"].includes(formationStatus)

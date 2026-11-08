@@ -220,13 +220,14 @@ def choose_target_count(samples):
     # Prefer the largest group size that persists within a short window.
     # Selecting the global mode tends to lock onto a frequently missed subset
     # (for example 5/7 dancers) even when complete detections occur repeatedly.
-    # With multi-pose detections, occasional lower counts usually mean occlusion
-    # or a dancer leaving frame. Prefer the largest credible group ever seen;
-    # don't choose the most common partial count as the fixed tracking size.
-    target = max(counts)
+    # A group count seen twice is more likely to be real than a one-frame pose
+    # hallucination. Still prefer the largest repeated count over a frequent
+    # partial count caused by occlusion or dancers leaving the frame.
+    repeated = [count for count, frequency in counts.items() if frequency >= 2]
+    target = max(repeated or counts.keys())
     print(json.dumps({"formation_counts": dict(sorted(counts.items())),
                       "persistent_counts": sorted(supported), "selected_count": target,
-                      "selection": "largest-observed"}),
+                      "selection": "largest-repeated" if repeated else "largest-single-frame"}),
           file=sys.stderr, flush=True)
     return target
 
