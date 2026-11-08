@@ -819,7 +819,6 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
                 ? formationStage === "downloading" ? "กำลังเตรียมวิดีโอ · คลิปเล่นต่อได้ตามปกติ"
                 : formationStage === "extracting-frames" ? "กำลังเลือกภาพตัวอย่างจากคลิป · คลิปเล่นต่อได้ตามปกติ"
                   : formationStage === "projecting-floor" ? "กำลังแปลงตำแหน่งเท้าบนพื้นเวที · คลิปเล่นต่อได้ตามปกติ"
-                    : formationStage === "refining-positions" ? "กำลังปรับตำแหน่งเท้าจากท่าทางนักเต้น · คลิปเล่นต่อได้ตามปกติ"
                     : "กำลังวิเคราะห์ตำแหน่งนักเต้น · คลิปเล่นต่อได้ตามปกติ"
                 : formationTimeline.length === 0 ? "ยังไม่พบรูปแบบแถวที่มั่นใจพอ"
                   : `แถว ${formationTimeline.filter((item) => item.time <= time).length} / ${formationTimeline.length} · ${formationPoints.length} คน · เปลี่ยนตามเวลา ${formatTime(time)}`}

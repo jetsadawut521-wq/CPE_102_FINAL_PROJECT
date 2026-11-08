@@ -8,7 +8,6 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
-PERSON_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/float32/1/efficientdet_lite2.tflite"
 POSE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
 MAX_DURATION = 900
 # Two-second spacing roughly halves CPU inference for typical practice clips.
@@ -87,10 +86,6 @@ def cached_model(filename, url):
     return model
 
 
-def person_model():
-    return cached_model("efficientdet_lite2.tflite", PERSON_MODEL_URL)
-
-
 def detector_frames(video_id, root):
     set_stage(root, "downloading")
     output = root / "clip.%(ext)s"
@@ -149,66 +144,67 @@ def collect_detections(paths, root):
     import numpy as np
     from PIL import Image
 
-    model = person_model()
-    options = mp.tasks.vision.ObjectDetectorOptions(
+    model = cached_model("pose_landmarker_lite.task", POSE_MODEL_URL)
+    options = mp.tasks.vision.PoseLandmarkerOptions(
         base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
         running_mode=mp.tasks.vision.RunningMode.IMAGE,
-        max_results=16,
-        # Dancers in wide practice-room shots can be small or partly occluded.
-        # Keep lower-confidence person boxes, then reject implausibly small boxes
-        # below before they affect the group-size estimate.
-        score_threshold=0.15,
-        category_allowlist=["person"],
+        num_poses=16,
+        min_pose_detection_confidence=0.25,
+        min_pose_presence_confidence=0.25,
     )
     samples = []
-    with mp.tasks.vision.ObjectDetector.create_from_options(options) as detector:
+    with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
         for index, path in enumerate(paths):
             with Image.open(path) as image:
                 rgb = np.asarray(image.convert("RGB"))
             height, width = rgb.shape[:2]
-            result = detector.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+            result = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
             candidates = []
-            for detection in result.detections:
-                category = detection.categories[0] if detection.categories else None
-                box = detection.bounding_box
-                if not category or (category.category_name or "").lower() != "person" or not box:
+            for landmarks in result.pose_landmarks:
+                visible = [point for point in landmarks
+                           if getattr(point, "visibility", 0.0) is not None and point.visibility >= 0.2]
+                if len(visible) < 8:
                     continue
-                left = max(0, box.origin_x) / width
-                top = max(0, box.origin_y) / height
-                right = min(width, box.origin_x + box.width) / width
-                bottom = min(height, box.origin_y + box.height) / height
+                # A pose is already an individual person hypothesis, so don't
+                # run box NMS here: close dancers' boxes can overlap heavily.
+                left = max(0.0, min(point.x for point in visible) - 0.025)
+                top = max(0.0, min(point.y for point in visible) - 0.015)
+                right = min(1.0, max(point.x for point in visible) + 0.025)
+                bottom = min(1.0, max(point.y for point in visible) + 0.015)
                 if right <= left or bottom <= top:
                     continue
                 box_width = right - left
                 box_height = bottom - top
-                if box_height < 0.08 or box_width < 0.02:
+                if box_height < 0.07 or box_width < 0.018:
                     continue
+                # Use both confident ankles as the floor anchor; when one is
+                # hidden, use the visible foot landmarks or the pose-box base.
+                ankles = [landmarks[landmark_index] for landmark_index in (27, 28)
+                          if getattr(landmarks[landmark_index], "visibility", 0.0) is not None
+                          and landmarks[landmark_index].visibility >= 0.4]
+                feet = [landmarks[landmark_index] for landmark_index in (29, 30, 31, 32)
+                        if getattr(landmarks[landmark_index], "visibility", 0.0) is not None
+                        and landmarks[landmark_index].visibility >= 0.35]
+                anchor_points = ankles if len(ankles) == 2 else (feet or ankles)
+                hips = [landmarks[landmark_index] for landmark_index in (23, 24)
+                        if getattr(landmarks[landmark_index], "visibility", 0.0) is not None
+                        and landmarks[landmark_index].visibility >= 0.35]
+                legs = [landmarks[landmark_index] for landmark_index in range(23, 33)
+                        if getattr(landmarks[landmark_index], "visibility", 0.0) is not None
+                        and landmarks[landmark_index].visibility >= 0.2]
+                anchor_x = (sum(point.x for point in anchor_points) / len(anchor_points)
+                            if anchor_points else sum(point.x for point in hips) / len(hips)
+                            if hips else (left + right) / 2)
+                anchor_y = (max(point.y for point in anchor_points) if anchor_points else
+                            max(point.y for point in legs) if legs else bottom)
                 crop = rgb[int(top * height + box_height * height * 0.18):int(top * height + box_height * height * 0.65),
                            int(left * width + box_width * width * 0.25):int(left * width + box_width * width * 0.75)]
                 appearance = crop.reshape(-1, 3).mean(axis=0).astype(float) / 255 if crop.size else np.zeros(3)
-                # The bottom center approximates where the dancer meets the floor;
-                # a fixed 92% offset floats dots above the floor by different
-                # amounts as bounding-box heights change with pose and distance.
-                candidates.append({"x": (left + right) / 2, "y": bottom,
-                                   "score": category.score, "box": (left, top, right, bottom),
+                confidence = sum(getattr(point, "visibility", 0.0) or 0.0 for point in visible) / len(visible)
+                candidates.append({"x": anchor_x, "y": anchor_y,
+                                   "score": confidence, "box": (left, top, right, bottom),
                                    "appearance": appearance.tolist()})
-            candidates.sort(key=lambda point: point["score"], reverse=True)
-            detections = []
-            for candidate in candidates:
-                duplicate = False
-                for accepted in detections:
-                    a = candidate["box"]
-                    b = accepted["box"]
-                    intersection = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
-                    area_a = (a[2] - a[0]) * (a[3] - a[1])
-                    area_b = (b[2] - b[0]) * (b[3] - b[1])
-                    iou = intersection / max(area_a + area_b - intersection, 1e-8)
-                    if iou > 0.65:
-                        duplicate = True
-                        break
-                if not duplicate:
-                    detections.append(candidate)
-            samples.append({"index": index, "time": index / SAMPLE_FPS, "points": detections})
+            samples.append({"index": index, "time": index / SAMPLE_FPS, "points": candidates})
     return samples
 
 
@@ -224,10 +220,13 @@ def choose_target_count(samples):
     # Prefer the largest group size that persists within a short window.
     # Selecting the global mode tends to lock onto a frequently missed subset
     # (for example 5/7 dancers) even when complete detections occur repeatedly.
-    target = max(supported) if supported else max(counts, key=lambda count: (counts[count], count))
+    # With multi-pose detections, occasional lower counts usually mean occlusion
+    # or a dancer leaving frame. Prefer the largest credible group ever seen;
+    # don't choose the most common partial count as the fixed tracking size.
+    target = max(counts)
     print(json.dumps({"formation_counts": dict(sorted(counts.items())),
                       "persistent_counts": sorted(supported), "selected_count": target,
-                      "selection": "largest-persistent" if supported else "most-frequent-fallback"}),
+                      "selection": "largest-observed"}),
           file=sys.stderr, flush=True)
     return target
 
@@ -454,13 +453,9 @@ def analyze(video_id, root, stage_corners):
     # locations are transformed using the calibrated four-corner quadrilateral.
     samples = project_samples(samples, transform, root)
     formations = build_timeline(samples)
-    try:
-        formations = refine_formation_positions(formations, samples, frames, transform, root)
-    except Exception as error:
-        print(f"[formation-pose] ankle refinement skipped: {error}", file=sys.stderr, flush=True)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v5", "formations": formations}
+    return {"engine": "formation-v6", "formations": formations}
 
 
 if __name__ == "__main__":
