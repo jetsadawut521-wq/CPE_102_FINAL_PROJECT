@@ -354,8 +354,10 @@ def pose_floor_positions(landmarks):
     positions = []
     for pose in landmarks:
         ankles = [pose[index] for index in (27, 28)
-                  if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.35]
-        if not ankles:
+                  if getattr(pose[index], "visibility", 0.0) is not None and pose[index].visibility >= 0.55]
+        # A single guessed ankle is not enough to correct a perspective map:
+        # in dance poses the lifted/occluded leg is often hallucinated.
+        if len(ankles) != 2:
             continue
         positions.append({"x": sum(point.x for point in ankles) / len(ankles),
                           # The lower visible ankle is the best available
@@ -411,8 +413,8 @@ def refine_formation_positions(formations, samples, paths, transform, root):
                     # area, normalized by that person's size so depth changes
                     # and close dancers do not dominate the matching.
                     dx = abs(pose["x"] - (left + right) / 2) / box_width
-                    dy = max(0.0, bottom - pose["y"]) / box_height
-                    if dx <= 0.7 and dy <= 0.45:
+                    dy = abs(bottom - pose["y"]) / box_height
+                    if dx <= 0.65 and dy <= 0.4:
                         costs[pose_index, observed_index] = dx + 0.6 * dy
             rows, columns = linear_sum_assignment(costs)
             aligned = {}
@@ -453,7 +455,7 @@ def analyze(video_id, root, stage_corners):
         print(f"[formation-pose] ankle refinement skipped: {error}", file=sys.stderr, flush=True)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v3", "formations": formations}
+    return {"engine": "formation-v4", "formations": formations}
 
 
 if __name__ == "__main__":
