@@ -221,9 +221,14 @@ def choose_target_count(samples):
     for start in range(max(1, len(frame_counts) - 4)):
         window = Counter(count for count in frame_counts[start:start + 5] if count >= 2)
         supported.update(count for count, frequency in window.items() if frequency >= 3)
-    target = max(counts, key=lambda count: (counts[count], count))
+    # Prefer the largest group size that persists within a short window.
+    # Selecting the global mode tends to lock onto a frequently missed subset
+    # (for example 5/7 dancers) even when complete detections occur repeatedly.
+    target = max(supported) if supported else max(counts, key=lambda count: (counts[count], count))
     print(json.dumps({"formation_counts": dict(sorted(counts.items())),
-                      "persistent_counts": sorted(supported), "selected_count": target}), file=sys.stderr, flush=True)
+                      "persistent_counts": sorted(supported), "selected_count": target,
+                      "selection": "largest-persistent" if supported else "most-frequent-fallback"}),
+          file=sys.stderr, flush=True)
     return target
 
 
@@ -455,7 +460,7 @@ def analyze(video_id, root, stage_corners):
         print(f"[formation-pose] ankle refinement skipped: {error}", file=sys.stderr, flush=True)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v4", "formations": formations}
+    return {"engine": "formation-v5", "formations": formations}
 
 
 if __name__ == "__main__":
