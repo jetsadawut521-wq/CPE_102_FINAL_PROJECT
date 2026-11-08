@@ -221,9 +221,14 @@ def choose_target_count(samples):
     for start in range(max(1, len(frame_counts) - 4)):
         window = Counter(count for count in frame_counts[start:start + 5] if count >= 2)
         supported.update(count for count, frequency in window.items() if frequency >= 3)
-    target = max(counts, key=lambda count: (counts[count], count))
+    # Prefer the largest group size that persists within a short window.
+    # Selecting the global mode tends to lock onto a frequently missed subset
+    # (for example 5/7 dancers) even when complete detections occur repeatedly.
+    target = max(supported) if supported else max(counts, key=lambda count: (counts[count], count))
     print(json.dumps({"formation_counts": dict(sorted(counts.items())),
-                      "persistent_counts": sorted(supported), "selected_count": target}), file=sys.stderr, flush=True)
+                      "persistent_counts": sorted(supported), "selected_count": target,
+                      "selection": "largest-persistent" if supported else "most-frequent-fallback"}),
+          file=sys.stderr, flush=True)
     return target
 
 
@@ -354,8 +359,10 @@ def pose_floor_positions(landmarks):
     positions = []
     for pose in landmarks:
         ankles = [pose[index] for index in (27, 28)
-                  if getattr(pose[index], "visibility", 1.0) is None or pose[index].visibility >= 0.35]
-        if not ankles:
+                  if getattr(pose[index], "visibility", 0.0) is not None and pose[index].visibility >= 0.55]
+        # A single guessed ankle is not enough to correct a perspective map:
+        # in dance poses the lifted/occluded leg is often hallucinated.
+        if len(ankles) != 2:
             continue
         positions.append({"x": sum(point.x for point in ankles) / len(ankles),
                           # The lower visible ankle is the best available
@@ -411,8 +418,8 @@ def refine_formation_positions(formations, samples, paths, transform, root):
                     # area, normalized by that person's size so depth changes
                     # and close dancers do not dominate the matching.
                     dx = abs(pose["x"] - (left + right) / 2) / box_width
-                    dy = max(0.0, bottom - pose["y"]) / box_height
-                    if dx <= 0.7 and dy <= 0.45:
+                    dy = abs(bottom - pose["y"]) / box_height
+                    if dx <= 0.65 and dy <= 0.4:
                         costs[pose_index, observed_index] = dx + 0.6 * dy
             rows, columns = linear_sum_assignment(costs)
             aligned = {}
@@ -453,7 +460,7 @@ def analyze(video_id, root, stage_corners):
         print(f"[formation-pose] ankle refinement skipped: {error}", file=sys.stderr, flush=True)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v3", "formations": formations}
+    return {"engine": "formation-v5", "formations": formations}
 
 
 if __name__ == "__main__":
