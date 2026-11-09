@@ -86,6 +86,16 @@ def project_point(point, transform):
     return {"x": x, "y": y}
 
 
+def point_inside_stage(x, y, corners):
+    """Return whether an image-space floor anchor lies in the calibrated stage."""
+    vertices = [(float(point["x"]), float(point["y"])) for point in corners]
+    crosses = []
+    for index, (start_x, start_y) in enumerate(vertices):
+        end_x, end_y = vertices[(index + 1) % len(vertices)]
+        crosses.append((end_x - start_x) * (y - start_y) - (end_y - start_y) * (x - start_x))
+    return all(value >= -1e-6 for value in crosses) or all(value <= 1e-6 for value in crosses)
+
+
 def cached_model(filename, url):
     root = Path(os.environ.get("FORMATION_MODEL_CACHE", str(Path.home() / ".cache" / "muverse-audio" / "models")))
     root.mkdir(parents=True, exist_ok=True)
@@ -150,7 +160,7 @@ def average_points(samples):
              "track_id": samples[0][i].get("track_id", i)} for i in range(size)]
 
 
-def collect_detections(paths, root):
+def collect_detections(paths, root, stage_corners):
     set_stage(root, "tracking-dancers")
     import numpy as np
     import torch
@@ -196,8 +206,15 @@ def collect_detections(paths, root):
                             if len(pose) > k and confidence[k] >= 0.2]
                     anchor_x = float(np.mean([point[0] for point in ankles])) if len(ankles) == 2 else (
                         float(np.mean([point[0] for point in hips])) if hips else (left + right) / 2)
-                    anchor_y = (float(max(point[1] for point in ankles)) / height if ankles else
+                    # Use the midpoint of both ankles as the dancer's floor
+                    # position. The lowest ankle alone follows a lunging or
+                    # extended foot and can move a dancer to the wrong depth row.
+                    anchor_y = (float(np.mean([point[1] for point in ankles])) / height if len(ankles) == 2 else
+                                float(ankles[0][1]) / height if ankles else
                                 float(max(point[1] for point in legs)) / height if legs else bottom)
+                    anchor_x_normalized = anchor_x / width
+                    if not point_inside_stage(anchor_x_normalized, anchor_y, stage_corners):
+                        continue
                     fallback_x = float(np.mean([point[0] for point in hips])) / width if hips else (left + right) / 2
                     fallback_y = float(max(point[1] for point in legs)) / height if legs else bottom
                     # A color histogram is more useful for identity than a
@@ -210,7 +227,7 @@ def collect_detections(paths, root):
                         appearance /= max(1.0, appearance.sum())
                     else:
                         appearance = np.full(64, 1 / 64, dtype=float)
-                    candidates.append({"x": anchor_x / width, "y": anchor_y,
+                    candidates.append({"x": anchor_x_normalized, "y": anchor_y,
                                        "fallback": {"x": fallback_x, "y": fallback_y},
                                        "score": float(score), "box": (left, top, right, bottom),
                                        "shape": box_width / max(0.01, box_height),
@@ -380,7 +397,7 @@ def analyze(video_id, root, stage_corners):
         except OSError:
             pass
     frames = detector_frames(video_id, root)
-    samples = collect_detections(frames, root)
+    samples = collect_detections(frames, root, stage_corners)
     target_count = choose_target_count(samples)
     samples = track_people(samples, target_count)
     # Use the same floor-plane projection approach as GridStage: dancers' foot
@@ -389,7 +406,7 @@ def analyze(video_id, root, stage_corners):
     formations = build_timeline(samples)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v11", "formations": formations}
+    return {"engine": "formation-v13", "formations": formations}
 
 
 if __name__ == "__main__":
