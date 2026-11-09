@@ -200,12 +200,20 @@ def collect_detections(paths, root):
                                 float(max(point[1] for point in legs)) / height if legs else bottom)
                     fallback_x = float(np.mean([point[0] for point in hips])) / width if hips else (left + right) / 2
                     fallback_y = float(max(point[1] for point in legs)) / height if legs else bottom
-                    crop = rgb[int(top * height + box_height * height * 0.18):int(top * height + box_height * height * 0.65),
-                               int(left * width + box_width * width * 0.25):int(left * width + box_width * width * 0.75)]
-                    appearance = crop.reshape(-1, 3).mean(axis=0).astype(float) / 255 if crop.size else np.zeros(3)
+                    # A color histogram is more useful for identity than a
+                    # single mean RGB value when dancers cross or overlap.
+                    identity_crop = rgb[int(top * height + box_height * height * 0.16):int(top * height + box_height * height * 0.82),
+                                        int(left * width + box_width * width * 0.2):int(left * width + box_width * width * 0.8)]
+                    if identity_crop.size:
+                        appearance = np.histogramdd(identity_crop.reshape(-1, 3), bins=(4, 4, 4),
+                                                    range=((0, 256), (0, 256), (0, 256)))[0].astype(float).ravel()
+                        appearance /= max(1.0, appearance.sum())
+                    else:
+                        appearance = np.full(64, 1 / 64, dtype=float)
                     candidates.append({"x": anchor_x / width, "y": anchor_y,
                                        "fallback": {"x": fallback_x, "y": fallback_y},
                                        "score": float(score), "box": (left, top, right, bottom),
+                                       "shape": box_width / max(0.01, box_height),
                                        "appearance": appearance.tolist()})
             samples.append({"index": index, "time": index / SAMPLE_FPS, "points": candidates})
     return samples
@@ -248,6 +256,7 @@ def track_people(samples, target_count):
                              key=lambda item: item["x"])
             for track_id, detection in enumerate(initial):
                 tracks.append({"id": track_id, "x": detection["x"], "y": detection["y"], "box": detection["box"],
+                               "shape": detection["shape"],
                                "fallback": detection["fallback"],
                                "vx": 0.0, "vy": 0.0, "time": sample["time"],
                                "appearance": detection["appearance"], "missing": 0})
@@ -263,9 +272,10 @@ def track_people(samples, target_count):
                     py = min(1.0, max(0.0, track["y"] + track["vy"] * dt))
                     for detection_index, detection in enumerate(detections):
                         spatial = ((px - detection["x"]) ** 2 + (py - detection["y"]) ** 2) ** 0.5
-                        appearance = sum((a - b) ** 2 for a, b in zip(track["appearance"], detection["appearance"])) ** 0.5
+                        appearance = 0.5 * sum(abs(a - b) for a, b in zip(track["appearance"], detection["appearance"]))
                         if spatial <= min(0.48, 0.22 + dt * 0.09):
-                            costs[track_index, detection_index] = spatial + appearance * 0.18
+                            shape_delta = abs(track["shape"] - detection["shape"])
+                            costs[track_index, detection_index] = spatial * 0.55 + appearance * 0.75 + min(0.25, shape_delta) * 0.12
                 rows, columns = linear_sum_assignment(costs)
                 pairs = [(row, column) for row, column in zip(rows, columns) if costs[row, column] < 1e3]
             matched_tracks = set()
@@ -279,8 +289,14 @@ def track_people(samples, target_count):
                 track["vy"] = max(-0.4, min(0.4, 0.55 * track["vy"] + 0.45 * vy))
                 track["x"], track["y"], track["time"] = detection["x"], detection["y"], sample["time"]
                 track["box"] = detection["box"]
+                track["shape"] = detection["shape"]
                 track["fallback"] = detection["fallback"]
-                track["appearance"] = [0.7 * old + 0.3 * new for old, new in zip(track["appearance"], detection["appearance"])]
+                appearance_delta = 0.5 * sum(abs(a - b) for a, b in zip(track["appearance"], detection["appearance"]))
+                # Keep a stable identity template; only adapt it when the match
+                # is visually plausible so an ID switch cannot poison it.
+                if appearance_delta < 0.5 and detection["score"] >= 0.3:
+                    track["appearance"] = [0.9 * old + 0.1 * new
+                                            for old, new in zip(track["appearance"], detection["appearance"])]
                 track["missing"] = 0
                 matched_tracks.add(track_index)
                 assignments.append({"id": track["id"], "point": {"x": detection["x"], "y": detection["y"]},
@@ -373,7 +389,7 @@ def analyze(video_id, root, stage_corners):
     formations = build_timeline(samples)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v10", "formations": formations}
+    return {"engine": "formation-v11", "formations": formations}
 
 
 if __name__ == "__main__":
