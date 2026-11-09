@@ -33,12 +33,12 @@ export async function POST(req: NextRequest) {
     const response = await fetch(url, { method: "POST", cache: "no-store", signal: AbortSignal.timeout(5000), redirect: "error",
       headers: { "Content-Type": "application/json", ...(process.env.AUDIO_ANALYSIS_TOKEN ? { Authorization: `Bearer ${process.env.AUDIO_ANALYSIS_TOKEN}` } : {}) },
       body: JSON.stringify({ stageCorners: corners }) });
-    if (response.status === 429) return NextResponse.json({ status: "busy", engine: "formation-v7", formations: [] });
+    if (response.status === 429) return NextResponse.json({ status: "busy", engine: "formation-v8", formations: [] });
     if (!response.ok) throw new Error("Formation service unavailable");
     const data = await response.json();
     if (!["queued", "processing", "ready", "failed"].includes(data.status)) throw new Error("Invalid formation job response");
     const formations = data.status === "ready" && Array.isArray(data.formations) ? data.formations : [];
-    return NextResponse.json({ status: data.status, engine: "formation-v7",
+    return NextResponse.json({ status: data.status, engine: "formation-v8",
       ...(data.stage ? { stage: data.stage } : {}),
       ...(data.status === "failed" && reasons.has(data.reason) ? { reason: data.reason } : {}), formations });
   } catch {

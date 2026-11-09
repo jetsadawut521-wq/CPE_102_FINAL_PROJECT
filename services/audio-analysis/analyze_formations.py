@@ -8,7 +8,7 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
-POSE_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
+YOLO_POSE_MODEL_URL = "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26s-pose.pt"
 MAX_DURATION = 900
 # Two-second spacing roughly halves CPU inference for typical practice clips.
 SAMPLE_FPS = 0.5
@@ -152,74 +152,58 @@ def average_points(samples):
 
 def collect_detections(paths, root):
     set_stage(root, "tracking-dancers")
-    import mediapipe as mp
     import numpy as np
     from PIL import Image
+    import torch
+    from ultralytics import YOLO
 
-    model = cached_model("pose_landmarker_lite.task", POSE_MODEL_URL)
-    options = mp.tasks.vision.PoseLandmarkerOptions(
-        base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
-        running_mode=mp.tasks.vision.RunningMode.IMAGE,
-        num_poses=16,
-        min_pose_detection_confidence=0.25,
-        min_pose_presence_confidence=0.25,
-    )
+    model_path = cached_model("yolo26s-pose.pt", YOLO_POSE_MODEL_URL)
+    requested_threads = int(os.environ.get("FORMATION_THREADS", os.cpu_count() or 1))
+    torch.set_num_threads(max(1, min(6, requested_threads)))
+    model = YOLO(str(model_path))
     samples = []
-    with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
-        for index, path in enumerate(paths):
-            with Image.open(path) as image:
-                rgb = np.asarray(image.convert("RGB"))
-            height, width = rgb.shape[:2]
-            result = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
-            candidates = []
-            for landmarks in result.pose_landmarks:
-                visible = [point for point in landmarks
-                           if getattr(point, "visibility", 0.0) is not None and point.visibility >= 0.2]
-                if len(visible) < 8:
-                    continue
-                # A pose is already an individual person hypothesis, so don't
-                # run box NMS here: close dancers' boxes can overlap heavily.
-                left = max(0.0, min(point.x for point in visible) - 0.025)
-                top = max(0.0, min(point.y for point in visible) - 0.015)
-                right = min(1.0, max(point.x for point in visible) + 0.025)
-                bottom = min(1.0, max(point.y for point in visible) + 0.015)
+    for index, path in enumerate(paths):
+        with Image.open(path) as image:
+            rgb = np.asarray(image.convert("RGB"))
+        height, width = rgb.shape[:2]
+        result = model.predict(str(path), imgsz=640, conf=0.12, iou=0.65, max_det=16,
+                               device="cpu", verbose=False)[0]
+        candidates = []
+        if result.boxes is not None and result.keypoints is not None:
+            boxes = result.boxes.xyxy.cpu().numpy()
+            scores = result.boxes.conf.cpu().numpy()
+            keypoints = result.keypoints.xy.cpu().numpy()
+            keypoint_scores = result.keypoints.conf
+            keypoint_scores = keypoint_scores.cpu().numpy() if keypoint_scores is not None else None
+            for detection_index, (box, score, pose) in enumerate(zip(boxes, scores, keypoints)):
+                left_px, top_px, right_px, bottom_px = box
+                left, top = max(0.0, left_px / width), max(0.0, top_px / height)
+                right, bottom = min(1.0, right_px / width), min(1.0, bottom_px / height)
                 if right <= left or bottom <= top:
                     continue
-                box_width = right - left
-                box_height = bottom - top
+                box_width, box_height = right - left, bottom - top
                 if box_height < 0.07 or box_width < 0.018:
                     continue
-                # Prefer heel/toe landmarks for the floor contact. Fall back
-                # to ankles when foot landmarks are occluded.
-                ankles = [landmarks[landmark_index] for landmark_index in (27, 28)
-                          if getattr(landmarks[landmark_index], "visibility", 0.0) is not None
-                          and landmarks[landmark_index].visibility >= 0.4]
-                feet = [landmarks[landmark_index] for landmark_index in (29, 30, 31, 32)
-                        if getattr(landmarks[landmark_index], "visibility", 0.0) is not None
-                        and landmarks[landmark_index].visibility >= 0.35]
-                anchor_points = feet if len(feet) >= 2 else ankles
-                hips = [landmarks[landmark_index] for landmark_index in (23, 24)
-                        if getattr(landmarks[landmark_index], "visibility", 0.0) is not None
-                        and landmarks[landmark_index].visibility >= 0.35]
-                legs = [landmarks[landmark_index] for landmark_index in range(23, 33)
-                        if getattr(landmarks[landmark_index], "visibility", 0.0) is not None
-                        and landmarks[landmark_index].visibility >= 0.2]
-                anchor_x = (sum(point.x for point in anchor_points) / len(anchor_points)
-                            if anchor_points else sum(point.x for point in hips) / len(hips)
-                            if hips else (left + right) / 2)
-                anchor_y = (max(point.y for point in anchor_points) if anchor_points else
-                            max(point.y for point in legs) if legs else bottom)
-                fallback_x = sum(point.x for point in hips) / len(hips) if hips else (left + right) / 2
-                fallback_y = max(point.y for point in legs) if legs else bottom
+                confidence = keypoint_scores[detection_index] if keypoint_scores is not None else np.ones(len(pose))
+                # COCO keypoint order: hips 11/12, knees 13/14, ankles 15/16.
+                ankles = [pose[k] for k in (15, 16) if len(pose) > k and confidence[k] >= 0.3]
+                hips = [pose[k] for k in (11, 12) if len(pose) > k and confidence[k] >= 0.25]
+                legs = [pose[k] for k in (11, 12, 13, 14, 15, 16)
+                        if len(pose) > k and confidence[k] >= 0.2]
+                anchor_x = float(np.mean([point[0] for point in ankles])) if len(ankles) == 2 else (
+                    float(np.mean([point[0] for point in hips])) if hips else (left + right) / 2)
+                anchor_y = (float(max(point[1] for point in ankles)) / height if ankles else
+                            float(max(point[1] for point in legs)) / height if legs else bottom)
+                fallback_x = float(np.mean([point[0] for point in hips])) / width if hips else (left + right) / 2
+                fallback_y = float(max(point[1] for point in legs)) / height if legs else bottom
                 crop = rgb[int(top * height + box_height * height * 0.18):int(top * height + box_height * height * 0.65),
                            int(left * width + box_width * width * 0.25):int(left * width + box_width * width * 0.75)]
                 appearance = crop.reshape(-1, 3).mean(axis=0).astype(float) / 255 if crop.size else np.zeros(3)
-                confidence = sum(getattr(point, "visibility", 0.0) or 0.0 for point in visible) / len(visible)
-                candidates.append({"x": anchor_x, "y": anchor_y,
+                candidates.append({"x": anchor_x / width, "y": anchor_y,
                                    "fallback": {"x": fallback_x, "y": fallback_y},
-                                   "score": confidence, "box": (left, top, right, bottom),
+                                   "score": float(score), "box": (left, top, right, bottom),
                                    "appearance": appearance.tolist()})
-            samples.append({"index": index, "time": index / SAMPLE_FPS, "points": candidates})
+        samples.append({"index": index, "time": index / SAMPLE_FPS, "points": candidates})
     return samples
 
 
@@ -372,90 +356,6 @@ def build_timeline(samples):
     return layouts
 
 
-def pose_floor_positions(landmarks):
-    positions = []
-    for pose in landmarks:
-        ankles = [pose[index] for index in (27, 28)
-                  if getattr(pose[index], "visibility", 0.0) is not None and pose[index].visibility >= 0.55]
-        # A single guessed ankle is not enough to correct a perspective map:
-        # in dance poses the lifted/occluded leg is often hallucinated.
-        if len(ankles) != 2:
-            continue
-        positions.append({"x": sum(point.x for point in ankles) / len(ankles),
-                          # The lower visible ankle is the best available
-                          # estimate of the dancer's floor contact.
-                          "y": max(point.y for point in ankles)})
-    return positions
-
-
-def refine_formation_positions(formations, samples, paths, transform, root):
-    """Replace detector-box bottoms with pose ankles at stable formation frames."""
-    if not formations:
-        return formations
-    import mediapipe as mp
-    import numpy as np
-    from PIL import Image
-    from scipy.optimize import linear_sum_assignment
-
-    set_stage(root, "refining-positions")
-    model = cached_model("pose_landmarker_lite.task", POSE_MODEL_URL)
-    options = mp.tasks.vision.PoseLandmarkerOptions(
-        base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
-        running_mode=mp.tasks.vision.RunningMode.IMAGE,
-        num_poses=16,
-        min_pose_detection_confidence=0.3,
-        min_pose_presence_confidence=0.3,
-    )
-    # One representative frame per layout keeps the refinement bounded while
-    # avoiding repeated pose inference for every sampled frame.
-    with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
-        for formation in formations:
-            indexes = formation.get("sample_indexes", [])
-            if not indexes:
-                continue
-            index = indexes[0]
-            if index >= len(paths) or index >= len(samples):
-                continue
-            observed = [item for item in samples[index].get("assignments", []) if item["observed"]]
-            if not observed:
-                continue
-            with Image.open(paths[index]) as image:
-                rgb = np.asarray(image.convert("RGB"))
-            result = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
-            poses = pose_floor_positions(result.pose_landmarks)
-            if not poses:
-                continue
-            costs = np.full((len(poses), len(observed)), 1e3, dtype=float)
-            for pose_index, pose in enumerate(poses):
-                for observed_index, item in enumerate(observed):
-                    left, top, right, bottom = item["box"]
-                    box_width = max(0.025, right - left)
-                    box_height = max(0.08, bottom - top)
-                    # Compare pose ankles to each detected person's lower box
-                    # area, normalized by that person's size so depth changes
-                    # and close dancers do not dominate the matching.
-                    dx = abs(pose["x"] - (left + right) / 2) / box_width
-                    dy = abs(bottom - pose["y"]) / box_height
-                    if dx <= 0.65 and dy <= 0.4:
-                        costs[pose_index, observed_index] = dx + 0.6 * dy
-            rows, columns = linear_sum_assignment(costs)
-            aligned = {}
-            for row, column in zip(rows, columns):
-                if costs[row, column] >= 1.0:
-                    continue
-                track_id = observed[column]["id"]
-                projected = project_point(poses[row], transform)
-                if projected:
-                    aligned[track_id] = projected
-            # Keep the box-derived position only for people whose ankles were
-            # not visible or could not be matched confidently.
-            for point in formation["points"]:
-                refined = aligned.get(point.get("track_id"))
-                if refined:
-                    point["x"], point["y"] = refined["x"], refined["y"]
-    return formations
-
-
 def analyze(video_id, root, stage_corners):
     transform = stage_projection(stage_corners)
     if os.name == "posix":
@@ -473,7 +373,7 @@ def analyze(video_id, root, stage_corners):
     formations = build_timeline(samples)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v7", "formations": formations}
+    return {"engine": "formation-v8", "formations": formations}
 
 
 if __name__ == "__main__":
