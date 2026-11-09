@@ -196,7 +196,11 @@ def collect_detections(paths, root):
                             if len(pose) > k and confidence[k] >= 0.2]
                     anchor_x = float(np.mean([point[0] for point in ankles])) if len(ankles) == 2 else (
                         float(np.mean([point[0] for point in hips])) if hips else (left + right) / 2)
-                    anchor_y = (float(max(point[1] for point in ankles)) / height if ankles else
+                    # Use the midpoint of both ankles as the dancer's floor
+                    # position. The lowest ankle alone follows a lunging or
+                    # extended foot and can move a dancer to the wrong depth row.
+                    anchor_y = (float(np.mean([point[1] for point in ankles])) / height if len(ankles) == 2 else
+                                float(ankles[0][1]) / height if ankles else
                                 float(max(point[1] for point in legs)) / height if legs else bottom)
                     fallback_x = float(np.mean([point[0] for point in hips])) / width if hips else (left + right) / 2
                     fallback_y = float(max(point[1] for point in legs)) / height if legs else bottom
@@ -389,7 +393,7 @@ def analyze(video_id, root, stage_corners):
     formations = build_timeline(samples)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v11", "formations": formations}
+    return {"engine": "formation-v12", "formations": formations}
 
 
 if __name__ == "__main__":
