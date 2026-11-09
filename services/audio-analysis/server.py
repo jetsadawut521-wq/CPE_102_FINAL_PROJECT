@@ -31,7 +31,7 @@ if ENGINE not in ("fast", "full"):
 LEASE_SECONDS = 8 if ENGINE == "fast" else 30
 JOB_TIMEOUT = 27 if ENGINE == "fast" else 180
 STAGES = {"downloading", "decoding", "separating", "features", "loading-model", "analyzing",
-          "extracting-frames", "tracking-dancers", "projecting-floor", "refining-positions"}
+          "extracting-frames", "tracking-dancers", "projecting-floor"}
 ERROR_CODES = {"dependency-missing", "tool-missing", "download-timeout", "decode-timeout",
                "download-failed", "decode-failed", "download-rejected", "analysis-failed"}
 FORMATION_ERRORS = {"dependency-missing", "tool-missing", "download-timeout", "download-failed",
@@ -90,7 +90,7 @@ def valid_segments(value):
 def formation_cache_path(video_id, calibration_key):
     # Keep calibrated floor projections separate from older algorithms and from
     # runs that use different stage corners.
-    return CACHE_DIR / f"formation-v16-{video_id}-{calibration_key}.json"
+    return CACHE_DIR / f"formation-v18-{video_id}-{calibration_key}.json"
 
 
 def read_formation_cache(video_id, calibration_key):
@@ -172,7 +172,7 @@ def run_formation_job(video_id, job_key, stage_corners, calibration_key):
         result = json.loads(output.decode().strip().splitlines()[-1])
         if not valid_formations(result.get("formations")):
             raise RuntimeError("invalid-result")
-        job = {"status": "ready", "engine": "formation-v5", "formations": result["formations"]}
+        job = {"status": "ready", "engine": "formation-v7", "formations": result["formations"]}
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         formation_cache_path(video_id, calibration_key).write_text(json.dumps(job, separators=(",", ":")))
     except Exception as error:
@@ -423,7 +423,7 @@ class Handler(BaseHTTPRequestHandler):
                     FORMATION_JOBS[job_key] = {**cached, "updated": now}
             if job_key not in FORMATION_JOBS:
                 if sum(job["status"] in ("queued", "processing") for job in FORMATION_JOBS.values()) >= 2:
-                    return self.respond(429, {"status": "busy", "engine": "formation-v5"})
+                    return self.respond(429, {"status": "busy", "engine": "formation-v7"})
                 FORMATION_JOBS[job_key] = {"status": "queued", "stage": "downloading", "updated": now}
                 FORMATION_POOL.submit(run_formation_job, video_id, job_key, stage_corners, calibration_key)
             job = FORMATION_JOBS[job_key]

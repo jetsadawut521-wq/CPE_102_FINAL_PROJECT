@@ -819,7 +819,6 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
                 ? formationStage === "downloading" ? "กำลังเตรียมวิดีโอ · คลิปเล่นต่อได้ตามปกติ"
                 : formationStage === "extracting-frames" ? "กำลังเลือกภาพตัวอย่างจากคลิป · คลิปเล่นต่อได้ตามปกติ"
                   : formationStage === "projecting-floor" ? "กำลังแปลงตำแหน่งเท้าบนพื้นเวที · คลิปเล่นต่อได้ตามปกติ"
-                    : formationStage === "refining-positions" ? "กำลังปรับตำแหน่งเท้าจากท่าทางนักเต้น · คลิปเล่นต่อได้ตามปกติ"
                     : "กำลังวิเคราะห์ตำแหน่งนักเต้น · คลิปเล่นต่อได้ตามปกติ"
                 : formationTimeline.length === 0 ? "ยังไม่พบรูปแบบแถวที่มั่นใจพอ"
                   : `แถว ${formationTimeline.filter((item) => item.time <= time).length} / ${formationTimeline.length} · ${formationPoints.length} คน · เปลี่ยนตามเวลา ${formatTime(time)}`}
@@ -847,7 +846,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
           </button>
           <small>
             {calibrationArmed
-              ? "หยุดคลิปไว้ แล้วคลิกมุมพื้นเวทีตามเข็มนาฬิกา: มุมไกลซ้าย → ไกลขวา → ใกล้ขวา → ใกล้ซ้าย"
+              ? "หยุดคลิปไว้ คลิกบนพื้นเท่านั้น: 1 ไกลซ้ายตรงรอยต่อผนัง-พื้น → 2 ไกลขวาตรงรอยต่อผนัง-พื้น → 3 ใกล้ขวา → 4 ใกล้ซ้าย (อย่าคลิกบนผนัง)"
               : stageCorners.length !== 4 && formationStatus === "off"
                 ? "ตั้งค่าพื้นเวที 4 มุมก่อน เพื่อแปลงตำแหน่งเท้าเป็นแผนผังมองจากด้านบน"
               : ["loading", "running"].includes(formationStatus)
