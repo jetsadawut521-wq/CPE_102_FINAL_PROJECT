@@ -175,8 +175,13 @@ def collect_detections(paths, root, stage_corners):
     batch_size = 4
     for batch_start in range(0, len(paths), batch_size):
         batch_paths = paths[batch_start:batch_start + batch_size]
+        # Crowded choreography often produces overlapping person boxes. A
+        # higher NMS IoU threshold keeps adjacent dancers instead of suppressing
+        # one as a duplicate; a modestly lower confidence threshold helps with
+        # partially occluded dancers. Stage-polygon filtering below still
+        # rejects detections outside the calibrated performance area.
         results = model.predict([str(path) for path in batch_paths], imgsz=640, batch=batch_size,
-                                conf=0.22, iou=0.5, max_det=16, device="cpu", verbose=False)
+                                conf=0.16, iou=0.7, max_det=24, device="cpu", verbose=False)
         for offset, result in enumerate(results):
             index = batch_start + offset
             # Ultralytics stores the decoded source frame in BGR order.
@@ -245,13 +250,21 @@ def choose_target_count(samples):
     for start in range(max(1, len(frame_counts) - 4)):
         window = Counter(count for count in frame_counts[start:start + 5] if count >= 2)
         supported.update(count for count, frequency in window.items() if frequency >= 3)
-    # Isolated or occasional duplicate detections must not set the group size.
-    # Prefer the most frequently observed count across the clip; break ties in
-    # favor of the larger count so brief occlusions do not shrink the group.
-    target = max(counts, key=lambda count: (counts[count], count))
+    # Prefer the largest count that is repeatedly visible in a local window.
+    # A clip often spends more time in tight/occluded formations, so choosing
+    # the global mode systematically drops dancers who are visible in the more
+    # open formations. Requiring 3 of 5 neighboring samples avoids reacting to
+    # a one-frame duplicate while allowing the group size to exceed the mode.
+    persistent = [count for count in supported if count in counts]
+    if persistent:
+        target = max(persistent)
+        selection = "largest-persistent-count"
+    else:
+        target = max(counts, key=lambda count: (counts[count], count))
+        selection = "most-frequent-fallback"
     print(json.dumps({"formation_counts": dict(sorted(counts.items())),
                       "persistent_counts": sorted(supported), "selected_count": target,
-                      "selection": "most-frequent-count"}),
+                      "selection": selection}),
           file=sys.stderr, flush=True)
     return target
 
@@ -406,7 +419,7 @@ def analyze(video_id, root, stage_corners):
     formations = build_timeline(samples)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v13", "formations": formations}
+    return {"engine": "formation-v14", "formations": formations}
 
 
 if __name__ == "__main__":
