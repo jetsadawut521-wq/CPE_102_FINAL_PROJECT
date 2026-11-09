@@ -47,16 +47,28 @@ def stage_projection(corners):
 
 
 def project_samples(samples, transform, root):
-    import numpy as np
-
     set_stage(root, "projecting-floor")
+    last_positions = {}
     for sample in samples:
         for point in sample["points"]:
-            projected = transform @ np.asarray([point["x"], point["y"], 1.0])
-            if abs(projected[2]) < 1e-8:
-                continue
-            point["x"] = min(1.0, max(0.0, float(projected[0] / projected[2])))
-            point["y"] = min(1.0, max(0.0, float(projected[1] / projected[2])))
+            projected = project_point(point, transform)
+            # Pose landmarks can be confident yet geometrically wrong. Don't
+            # clamp an ankle projected outside the calibrated floor to an edge;
+            # that creates dots at the very top/bottom of the map. Try the
+            # person box's lower-leg anchor first, then retain an in-stage point.
+            if projected and 0.03 <= projected["x"] <= 0.97 and 0.03 <= projected["y"] <= 0.97:
+                point["x"], point["y"] = projected["x"], projected["y"]
+            else:
+                fallback = project_point(point.get("fallback", point), transform)
+                track_id = point.get("track_id")
+                if fallback:
+                    point["x"], point["y"] = fallback["x"], fallback["y"]
+                elif track_id in last_positions:
+                    point["x"], point["y"] = last_positions[track_id]
+                else:
+                    point["x"], point["y"] = 0.5, 0.5
+            if point.get("track_id") is not None:
+                last_positions[point["track_id"]] = (point["x"], point["y"])
     return samples
 
 
@@ -177,15 +189,15 @@ def collect_detections(paths, root):
                 box_height = bottom - top
                 if box_height < 0.07 or box_width < 0.018:
                     continue
-                # Use both confident ankles as the floor anchor; when one is
-                # hidden, use the visible foot landmarks or the pose-box base.
+                # Prefer heel/toe landmarks for the floor contact. Fall back
+                # to ankles when foot landmarks are occluded.
                 ankles = [landmarks[landmark_index] for landmark_index in (27, 28)
                           if getattr(landmarks[landmark_index], "visibility", 0.0) is not None
                           and landmarks[landmark_index].visibility >= 0.4]
                 feet = [landmarks[landmark_index] for landmark_index in (29, 30, 31, 32)
                         if getattr(landmarks[landmark_index], "visibility", 0.0) is not None
                         and landmarks[landmark_index].visibility >= 0.35]
-                anchor_points = ankles if len(ankles) == 2 else (feet or ankles)
+                anchor_points = feet if len(feet) >= 2 else ankles
                 hips = [landmarks[landmark_index] for landmark_index in (23, 24)
                         if getattr(landmarks[landmark_index], "visibility", 0.0) is not None
                         and landmarks[landmark_index].visibility >= 0.35]
@@ -197,11 +209,14 @@ def collect_detections(paths, root):
                             if hips else (left + right) / 2)
                 anchor_y = (max(point.y for point in anchor_points) if anchor_points else
                             max(point.y for point in legs) if legs else bottom)
+                fallback_x = sum(point.x for point in hips) / len(hips) if hips else (left + right) / 2
+                fallback_y = max(point.y for point in legs) if legs else bottom
                 crop = rgb[int(top * height + box_height * height * 0.18):int(top * height + box_height * height * 0.65),
                            int(left * width + box_width * width * 0.25):int(left * width + box_width * width * 0.75)]
                 appearance = crop.reshape(-1, 3).mean(axis=0).astype(float) / 255 if crop.size else np.zeros(3)
                 confidence = sum(getattr(point, "visibility", 0.0) or 0.0 for point in visible) / len(visible)
                 candidates.append({"x": anchor_x, "y": anchor_y,
+                                   "fallback": {"x": fallback_x, "y": fallback_y},
                                    "score": confidence, "box": (left, top, right, bottom),
                                    "appearance": appearance.tolist()})
             samples.append({"index": index, "time": index / SAMPLE_FPS, "points": candidates})
@@ -249,6 +264,7 @@ def track_people(samples, target_count):
                              key=lambda item: item["x"])
             for track_id, detection in enumerate(initial):
                 tracks.append({"id": track_id, "x": detection["x"], "y": detection["y"], "box": detection["box"],
+                               "fallback": detection["fallback"],
                                "vx": 0.0, "vy": 0.0, "time": sample["time"],
                                "appearance": detection["appearance"], "missing": 0})
                 assignments.append({"id": track_id, "point": {"x": detection["x"], "y": detection["y"]},
@@ -279,6 +295,7 @@ def track_people(samples, target_count):
                 track["vy"] = max(-0.4, min(0.4, 0.55 * track["vy"] + 0.45 * vy))
                 track["x"], track["y"], track["time"] = detection["x"], detection["y"], sample["time"]
                 track["box"] = detection["box"]
+                track["fallback"] = detection["fallback"]
                 track["appearance"] = [0.7 * old + 0.3 * new for old, new in zip(track["appearance"], detection["appearance"])]
                 track["missing"] = 0
                 matched_tracks.add(track_index)
@@ -298,7 +315,7 @@ def track_people(samples, target_count):
                 assignments.append({"id": track["id"], "point": {"x": track["x"], "y": track["y"]},
                                     "box": track["box"], "observed": False})
 
-        points = [{"x": track["x"], "y": track["y"], "color": track["id"] % 10,
+        points = [{"x": track["x"], "y": track["y"], "fallback": track["fallback"], "color": track["id"] % 10,
                    "track_id": track["id"]} for track in tracks]
         tracked_samples.append({"index": sample["index"], "time": sample["time"],
                                 "points": points, "assignments": assignments})
@@ -456,7 +473,7 @@ def analyze(video_id, root, stage_corners):
     formations = build_timeline(samples)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v6", "formations": formations}
+    return {"engine": "formation-v7", "formations": formations}
 
 
 if __name__ == "__main__":
