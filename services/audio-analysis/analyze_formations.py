@@ -166,7 +166,7 @@ def collect_detections(paths, root):
         with Image.open(path) as image:
             rgb = np.asarray(image.convert("RGB"))
         height, width = rgb.shape[:2]
-        result = model.predict(str(path), imgsz=640, conf=0.12, iou=0.65, max_det=16,
+        result = model.predict(str(path), imgsz=640, conf=0.22, iou=0.5, max_det=16,
                                device="cpu", verbose=False)[0]
         candidates = []
         if result.boxes is not None and result.keypoints is not None:
@@ -216,17 +216,13 @@ def choose_target_count(samples):
     for start in range(max(1, len(frame_counts) - 4)):
         window = Counter(count for count in frame_counts[start:start + 5] if count >= 2)
         supported.update(count for count, frequency in window.items() if frequency >= 3)
-    # Prefer the largest group size that persists within a short window.
-    # Selecting the global mode tends to lock onto a frequently missed subset
-    # (for example 5/7 dancers) even when complete detections occur repeatedly.
-    # A group count seen twice is more likely to be real than a one-frame pose
-    # hallucination. Still prefer the largest repeated count over a frequent
-    # partial count caused by occlusion or dancers leaving the frame.
-    repeated = [count for count, frequency in counts.items() if frequency >= 2]
-    target = max(repeated or counts.keys())
+    # Isolated or occasional duplicate detections must not set the group size.
+    # Prefer the most frequently observed count across the clip; break ties in
+    # favor of the larger count so brief occlusions do not shrink the group.
+    target = max(counts, key=lambda count: (counts[count], count))
     print(json.dumps({"formation_counts": dict(sorted(counts.items())),
                       "persistent_counts": sorted(supported), "selected_count": target,
-                      "selection": "largest-repeated" if repeated else "largest-single-frame"}),
+                      "selection": "most-frequent-count"}),
           file=sys.stderr, flush=True)
     return target
 
@@ -373,7 +369,7 @@ def analyze(video_id, root, stage_corners):
     formations = build_timeline(samples)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v8", "formations": formations}
+    return {"engine": "formation-v9", "formations": formations}
 
 
 if __name__ == "__main__":
