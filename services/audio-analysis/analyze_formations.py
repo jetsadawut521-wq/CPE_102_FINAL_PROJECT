@@ -209,19 +209,29 @@ def collect_detections(paths, root, stage_corners):
                     hips = [pose[k] for k in (11, 12) if len(pose) > k and confidence[k] >= 0.25]
                     legs = [pose[k] for k in (11, 12, 13, 14, 15, 16)
                             if len(pose) > k and confidence[k] >= 0.2]
-                    anchor_x = float(np.mean([point[0] for point in ankles])) if len(ankles) == 2 else (
+                    # Pose models sometimes assign an occluded dancer the
+                    # visible dancer's ankles, or put ankles around the torso.
+                    # Accept ankle coordinates only when they lie in the lower
+                    # part of this detection box; otherwise use the box floor
+                    # edge. This prevents a hidden rear dancer's dot jumping
+                    # toward the back wall because a knee/hip was used as a
+                    # pretend foot.
+                    box_top_px, box_bottom_px = top * height, bottom * height
+                    ankle_y_px = float(np.mean([point[1] for point in ankles])) if ankles else None
+                    ankle_is_plausible = (ankle_y_px is not None and
+                                          box_top_px + box_height * height * 0.52 <= ankle_y_px <=
+                                          box_bottom_px + box_height * height * 0.12)
+                    usable_ankles = ankles if ankle_is_plausible else []
+                    anchor_x = float(np.mean([point[0] for point in usable_ankles])) if len(usable_ankles) == 2 else (
                         float(np.mean([point[0] for point in hips])) if hips else (left + right) / 2)
-                    # Use the midpoint of both ankles as the dancer's floor
-                    # position. The lowest ankle alone follows a lunging or
-                    # extended foot and can move a dancer to the wrong depth row.
-                    anchor_y = (float(np.mean([point[1] for point in ankles])) / height if len(ankles) == 2 else
-                                float(ankles[0][1]) / height if ankles else
-                                float(max(point[1] for point in legs)) / height if legs else bottom)
+                    # Average both plausible ankles to avoid a lunge/extended
+                    # foot pulling the depth coordinate to one side.
+                    anchor_y = (ankle_y_px / height if ankle_is_plausible else bottom)
                     anchor_x_normalized = anchor_x / width
                     if not point_inside_stage(anchor_x_normalized, anchor_y, stage_corners):
                         continue
                     fallback_x = float(np.mean([point[0] for point in hips])) / width if hips else (left + right) / 2
-                    fallback_y = float(max(point[1] for point in legs)) / height if legs else bottom
+                    fallback_y = bottom
                     # A color histogram is more useful for identity than a
                     # single mean RGB value when dancers cross or overlap.
                     identity_crop = rgb[int(top * height + box_height * height * 0.16):int(top * height + box_height * height * 0.82),
@@ -419,7 +429,7 @@ def analyze(video_id, root, stage_corners):
     formations = build_timeline(samples)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v14", "formations": formations}
+    return {"engine": "formation-v15", "formations": formations}
 
 
 if __name__ == "__main__":
