@@ -153,57 +153,61 @@ def average_points(samples):
 def collect_detections(paths, root):
     set_stage(root, "tracking-dancers")
     import numpy as np
-    from PIL import Image
     import torch
     from ultralytics import YOLO
 
     model_path = cached_model("yolo26s-pose.pt", YOLO_POSE_MODEL_URL)
     requested_threads = int(os.environ.get("FORMATION_THREADS", os.cpu_count() or 1))
     torch.set_num_threads(max(1, min(6, requested_threads)))
+    torch.set_num_interop_threads(1)
     model = YOLO(str(model_path))
     samples = []
-    for index, path in enumerate(paths):
-        with Image.open(path) as image:
-            rgb = np.asarray(image.convert("RGB"))
-        height, width = rgb.shape[:2]
-        result = model.predict(str(path), imgsz=640, conf=0.22, iou=0.5, max_det=16,
-                               device="cpu", verbose=False)[0]
-        candidates = []
-        if result.boxes is not None and result.keypoints is not None:
-            boxes = result.boxes.xyxy.cpu().numpy()
-            scores = result.boxes.conf.cpu().numpy()
-            keypoints = result.keypoints.xy.cpu().numpy()
-            keypoint_scores = result.keypoints.conf
-            keypoint_scores = keypoint_scores.cpu().numpy() if keypoint_scores is not None else None
-            for detection_index, (box, score, pose) in enumerate(zip(boxes, scores, keypoints)):
-                left_px, top_px, right_px, bottom_px = box
-                left, top = max(0.0, left_px / width), max(0.0, top_px / height)
-                right, bottom = min(1.0, right_px / width), min(1.0, bottom_px / height)
-                if right <= left or bottom <= top:
-                    continue
-                box_width, box_height = right - left, bottom - top
-                if box_height < 0.07 or box_width < 0.018:
-                    continue
-                confidence = keypoint_scores[detection_index] if keypoint_scores is not None else np.ones(len(pose))
-                # COCO keypoint order: hips 11/12, knees 13/14, ankles 15/16.
-                ankles = [pose[k] for k in (15, 16) if len(pose) > k and confidence[k] >= 0.3]
-                hips = [pose[k] for k in (11, 12) if len(pose) > k and confidence[k] >= 0.25]
-                legs = [pose[k] for k in (11, 12, 13, 14, 15, 16)
-                        if len(pose) > k and confidence[k] >= 0.2]
-                anchor_x = float(np.mean([point[0] for point in ankles])) if len(ankles) == 2 else (
-                    float(np.mean([point[0] for point in hips])) if hips else (left + right) / 2)
-                anchor_y = (float(max(point[1] for point in ankles)) / height if ankles else
-                            float(max(point[1] for point in legs)) / height if legs else bottom)
-                fallback_x = float(np.mean([point[0] for point in hips])) / width if hips else (left + right) / 2
-                fallback_y = float(max(point[1] for point in legs)) / height if legs else bottom
-                crop = rgb[int(top * height + box_height * height * 0.18):int(top * height + box_height * height * 0.65),
-                           int(left * width + box_width * width * 0.25):int(left * width + box_width * width * 0.75)]
-                appearance = crop.reshape(-1, 3).mean(axis=0).astype(float) / 255 if crop.size else np.zeros(3)
-                candidates.append({"x": anchor_x / width, "y": anchor_y,
-                                   "fallback": {"x": fallback_x, "y": fallback_y},
-                                   "score": float(score), "box": (left, top, right, bottom),
-                                   "appearance": appearance.tolist()})
-        samples.append({"index": index, "time": index / SAMPLE_FPS, "points": candidates})
+    batch_size = 4
+    for batch_start in range(0, len(paths), batch_size):
+        batch_paths = paths[batch_start:batch_start + batch_size]
+        results = model.predict([str(path) for path in batch_paths], imgsz=640, batch=batch_size,
+                                conf=0.22, iou=0.5, max_det=16, device="cpu", verbose=False)
+        for offset, result in enumerate(results):
+            index = batch_start + offset
+            # Ultralytics stores the decoded source frame in BGR order.
+            rgb = np.asarray(result.orig_img)[:, :, ::-1]
+            height, width = rgb.shape[:2]
+            candidates = []
+            if result.boxes is not None and result.keypoints is not None:
+                boxes = result.boxes.xyxy.cpu().numpy()
+                scores = result.boxes.conf.cpu().numpy()
+                keypoints = result.keypoints.xy.cpu().numpy()
+                keypoint_scores = result.keypoints.conf
+                keypoint_scores = keypoint_scores.cpu().numpy() if keypoint_scores is not None else None
+                for detection_index, (box, score, pose) in enumerate(zip(boxes, scores, keypoints)):
+                    left_px, top_px, right_px, bottom_px = box
+                    left, top = max(0.0, left_px / width), max(0.0, top_px / height)
+                    right, bottom = min(1.0, right_px / width), min(1.0, bottom_px / height)
+                    if right <= left or bottom <= top:
+                        continue
+                    box_width, box_height = right - left, bottom - top
+                    if box_height < 0.07 or box_width < 0.018:
+                        continue
+                    confidence = keypoint_scores[detection_index] if keypoint_scores is not None else np.ones(len(pose))
+                    # COCO keypoint order: hips 11/12, knees 13/14, ankles 15/16.
+                    ankles = [pose[k] for k in (15, 16) if len(pose) > k and confidence[k] >= 0.3]
+                    hips = [pose[k] for k in (11, 12) if len(pose) > k and confidence[k] >= 0.25]
+                    legs = [pose[k] for k in (11, 12, 13, 14, 15, 16)
+                            if len(pose) > k and confidence[k] >= 0.2]
+                    anchor_x = float(np.mean([point[0] for point in ankles])) if len(ankles) == 2 else (
+                        float(np.mean([point[0] for point in hips])) if hips else (left + right) / 2)
+                    anchor_y = (float(max(point[1] for point in ankles)) / height if ankles else
+                                float(max(point[1] for point in legs)) / height if legs else bottom)
+                    fallback_x = float(np.mean([point[0] for point in hips])) / width if hips else (left + right) / 2
+                    fallback_y = float(max(point[1] for point in legs)) / height if legs else bottom
+                    crop = rgb[int(top * height + box_height * height * 0.18):int(top * height + box_height * height * 0.65),
+                               int(left * width + box_width * width * 0.25):int(left * width + box_width * width * 0.75)]
+                    appearance = crop.reshape(-1, 3).mean(axis=0).astype(float) / 255 if crop.size else np.zeros(3)
+                    candidates.append({"x": anchor_x / width, "y": anchor_y,
+                                       "fallback": {"x": fallback_x, "y": fallback_y},
+                                       "score": float(score), "box": (left, top, right, bottom),
+                                       "appearance": appearance.tolist()})
+            samples.append({"index": index, "time": index / SAMPLE_FPS, "points": candidates})
     return samples
 
 
@@ -369,7 +373,7 @@ def analyze(video_id, root, stage_corners):
     formations = build_timeline(samples)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v9", "formations": formations}
+    return {"engine": "formation-v10", "formations": formations}
 
 
 if __name__ == "__main__":
