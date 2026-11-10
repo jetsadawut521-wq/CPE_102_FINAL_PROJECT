@@ -117,6 +117,14 @@ export function useAutoHighlights(videoId: string | undefined): {
       displayedCache.delete(videoId);
       displayedCache.set(videoId, accepted);
       if (displayedCache.size > 128) displayedCache.delete(displayedCache.keys().next().value!);
+
+      // Random Dance reads the persisted, displayed result. Audio-selected
+      // highlights can differ from the initial lyrics/comment response, so
+      // keep storage in sync with the exact ranges shown to the user.
+      const saved = readSavedHighlights(videoId);
+      if (JSON.stringify(saved) !== JSON.stringify(accepted)) {
+        saveAnalyzedHighlights(videoId, accepted);
+      }
     }
     setShown(old => old.id === videoId && old.segments === accepted ? old : { id: videoId, segments: accepted });
   }, [videoId, proposed]);
