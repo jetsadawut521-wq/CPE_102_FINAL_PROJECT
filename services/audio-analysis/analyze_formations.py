@@ -175,8 +175,13 @@ def collect_detections(paths, root, stage_corners):
     batch_size = 4
     for batch_start in range(0, len(paths), batch_size):
         batch_paths = paths[batch_start:batch_start + batch_size]
+        # Crowded choreography often produces overlapping person boxes. A
+        # higher NMS IoU threshold keeps adjacent dancers instead of suppressing
+        # one as a duplicate; a lower confidence threshold helps with small,
+        # partially occluded dancers in crowded formations. Stage-polygon
+        # filtering below still rejects detections outside the calibrated area.
         results = model.predict([str(path) for path in batch_paths], imgsz=640, batch=batch_size,
-                                conf=0.22, iou=0.5, max_det=16, device="cpu", verbose=False)
+                                conf=0.10, iou=0.75, max_det=24, device="cpu", verbose=False)
         for offset, result in enumerate(results):
             index = batch_start + offset
             # Ultralytics stores the decoded source frame in BGR order.
@@ -204,19 +209,29 @@ def collect_detections(paths, root, stage_corners):
                     hips = [pose[k] for k in (11, 12) if len(pose) > k and confidence[k] >= 0.25]
                     legs = [pose[k] for k in (11, 12, 13, 14, 15, 16)
                             if len(pose) > k and confidence[k] >= 0.2]
-                    anchor_x = float(np.mean([point[0] for point in ankles])) if len(ankles) == 2 else (
+                    # Pose models sometimes assign an occluded dancer the
+                    # visible dancer's ankles, or put ankles around the torso.
+                    # Accept ankle coordinates only when they lie in the lower
+                    # part of this detection box; otherwise use the box floor
+                    # edge. This prevents a hidden rear dancer's dot jumping
+                    # toward the back wall because a knee/hip was used as a
+                    # pretend foot.
+                    box_top_px, box_bottom_px = top * height, bottom * height
+                    ankle_y_px = float(np.mean([point[1] for point in ankles])) if ankles else None
+                    ankle_is_plausible = (ankle_y_px is not None and
+                                          box_top_px + box_height * height * 0.52 <= ankle_y_px <=
+                                          box_bottom_px + box_height * height * 0.12)
+                    usable_ankles = ankles if ankle_is_plausible else []
+                    anchor_x = float(np.mean([point[0] for point in usable_ankles])) if len(usable_ankles) == 2 else (
                         float(np.mean([point[0] for point in hips])) if hips else (left + right) / 2)
-                    # Use the midpoint of both ankles as the dancer's floor
-                    # position. The lowest ankle alone follows a lunging or
-                    # extended foot and can move a dancer to the wrong depth row.
-                    anchor_y = (float(np.mean([point[1] for point in ankles])) / height if len(ankles) == 2 else
-                                float(ankles[0][1]) / height if ankles else
-                                float(max(point[1] for point in legs)) / height if legs else bottom)
+                    # Average both plausible ankles to avoid a lunge/extended
+                    # foot pulling the depth coordinate to one side.
+                    anchor_y = (ankle_y_px / height if ankle_is_plausible else bottom)
                     anchor_x_normalized = anchor_x / width
                     if not point_inside_stage(anchor_x_normalized, anchor_y, stage_corners):
                         continue
                     fallback_x = float(np.mean([point[0] for point in hips])) / width if hips else (left + right) / 2
-                    fallback_y = float(max(point[1] for point in legs)) / height if legs else bottom
+                    fallback_y = bottom
                     # A color histogram is more useful for identity than a
                     # single mean RGB value when dancers cross or overlap.
                     identity_crop = rgb[int(top * height + box_height * height * 0.16):int(top * height + box_height * height * 0.82),
@@ -245,13 +260,21 @@ def choose_target_count(samples):
     for start in range(max(1, len(frame_counts) - 4)):
         window = Counter(count for count in frame_counts[start:start + 5] if count >= 2)
         supported.update(count for count, frequency in window.items() if frequency >= 3)
-    # Isolated or occasional duplicate detections must not set the group size.
-    # Prefer the most frequently observed count across the clip; break ties in
-    # favor of the larger count so brief occlusions do not shrink the group.
-    target = max(counts, key=lambda count: (counts[count], count))
+    # Prefer the largest count that is repeatedly visible in a local window.
+    # A clip often spends more time in tight/occluded formations, so choosing
+    # the global mode systematically drops dancers who are visible in the more
+    # open formations. Requiring 3 of 5 neighboring samples avoids reacting to
+    # a one-frame duplicate while allowing the group size to exceed the mode.
+    persistent = [count for count in supported if count in counts]
+    if persistent:
+        target = max(persistent)
+        selection = "largest-persistent-count"
+    else:
+        target = max(counts, key=lambda count: (counts[count], count))
+        selection = "most-frequent-fallback"
     print(json.dumps({"formation_counts": dict(sorted(counts.items())),
                       "persistent_counts": sorted(supported), "selected_count": target,
-                      "selection": "most-frequent-count"}),
+                      "selection": selection}),
           file=sys.stderr, flush=True)
     return target
 
@@ -406,7 +429,7 @@ def analyze(video_id, root, stage_corners):
     formations = build_timeline(samples)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v13", "formations": formations}
+    return {"engine": "formation-v16", "formations": formations}
 
 
 if __name__ == "__main__":

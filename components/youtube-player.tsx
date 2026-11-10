@@ -63,10 +63,6 @@ type FlashState = { text: string; pos: "left" | "right" | "center" };
 type FormationPoint = { x: number; y: number; color: string };
 type FormationSnapshot = { time: number; points: Array<{ x: number; y: number; color: number }> };
 type StageCorner = { x: number; y: number };
-const MIN_STAGE_DEPTH_SPAN = 0.25;
-const stageDepthSpan = (corners: StageCorner[]) => corners.length === 4
-  ? (corners[2].y + corners[3].y - corners[0].y - corners[1].y) / 2
-  : 0;
 const FORMATION_COLORS = ["#ffe600", "#ff5b9a", "#4de1ff", "#a78bfa", "#ff9f43", "#68e39a", "#ff6b6b", "#5eead4", "#c084fc", "#facc15"];
 
 export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onError, loopOne = false, highlights = NO_HIGHLIGHTS }: Props) {
@@ -557,17 +553,10 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
       }];
       setCalibrationMarks(next);
       if (next.length === 4) {
-        const depthSpan = stageDepthSpan(next);
-        if (depthSpan < MIN_STAGE_DEPTH_SPAN) {
-          setCalibrationMarks([]);
-          setFormationError("จุดไกล 1/2 อยู่ต่ำเกินไปหรือใกล้จุดหน้าเกินไป: วาง 1/2 ตรงรอยต่อผนัง-พื้น และ 3/4 ที่ขอบพื้นด้านหน้า แล้วคลิกใหม่ครบ 4 จุด");
-          return;
-        }
         // Convert the visible corner order to the original, unmirrored frame.
         const ordered = mirrored ? [next[1], next[0], next[3], next[2]] : next;
         setStageCorners(ordered.map((point) => ({ x: mirrored ? 1 - point.x : point.x, y: point.y })));
         setCalibrationArmed(false);
-        setFormationError(null);
       }
       return;
     }
@@ -622,10 +611,6 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const startFormationAnalysis = useCallback(async () => {
     if (stageCorners.length !== 4) {
       setFormationError("ตั้งค่ามุมพื้นเวทีให้ครบ 4 จุดก่อน");
-      return;
-    }
-    if (stageDepthSpan(stageCorners) < MIN_STAGE_DEPTH_SPAN) {
-      setFormationError("มุมพื้นเวทีครอบคลุมระยะลึกไม่พอ: ตั้งจุดไกล 1/2 ตรงรอยต่อผนัง-พื้น แล้วตั้งจุดหน้า 3/4 ที่ขอบพื้นด้านหน้า");
       return;
     }
     formationAbortRef.current?.abort();
@@ -861,7 +846,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
           </button>
           <small>
             {calibrationArmed
-              ? "หยุดคลิปไว้ คลิกบนพื้นเท่านั้น: 1 ไกลซ้ายตรงรอยต่อผนัง-พื้น → 2 ไกลขวาตรงรอยต่อผนัง-พื้น → 3 ใกล้ขวาสุด → 4 ใกล้ซ้ายสุด (อย่าคลิกบนผนัง); จุดไกลกับจุดหน้าต้องห่างกันชัดเจน"
+              ? "หยุดคลิปไว้ คลิกบนพื้นเท่านั้น: 1 ไกลซ้ายตรงรอยต่อผนัง-พื้น → 2 ไกลขวาตรงรอยต่อผนัง-พื้น → 3 ใกล้ขวา → 4 ใกล้ซ้าย (อย่าคลิกบนผนัง)"
               : stageCorners.length !== 4 && formationStatus === "off"
                 ? "ตั้งค่าพื้นเวที 4 มุมก่อน เพื่อแปลงตำแหน่งเท้าเป็นแผนผังมองจากด้านบน"
               : ["loading", "running"].includes(formationStatus)
