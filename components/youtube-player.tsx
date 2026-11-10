@@ -7,6 +7,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { YT_STATE, formatTime, loadYouTubeApi, type YTEvent, type YTPlayer } from "@/lib/youtube";
 import type { AutoSegment } from "@/lib/highlight-analysis";
+import { readSavedFormations, readStageCalibration, saveFormations, saveStageCalibration,
+  type FormationPoint as SavedFormationPoint, type FormationSnapshot as SavedFormationSnapshot, type StageCorner as SavedStageCorner } from "@/lib/analysis-storage";
 import "./youtube-player.css";
 
 interface Props {
@@ -16,6 +18,8 @@ interface Props {
   onError?: (code: number) => void; // รหัส error จาก YouTube (เช่น 101/150 = ฝังไม่ได้)
   loopOne?: boolean; // เล่นคลิปนี้ซ้ำไปเรื่อย ๆ: จบแล้วเริ่มใหม่เองและไม่เรียก onEnded
   highlights?: AutoSegment[]; // ท่อนยอดนิยมที่ระบบวิเคราะห์ให้ แสดงบนแถบกรอ (ว่าง = ไม่แสดง)
+  focusRange?: { start: number; end: number; key: string };
+  onFocusRangeEnd?: () => void;
 }
 
 const NO_HIGHLIGHTS: AutoSegment[] = [];
@@ -60,12 +64,13 @@ function isTextEntry(el: EventTarget | null): boolean {
 }
 
 type FlashState = { text: string; pos: "left" | "right" | "center" };
-type FormationPoint = { x: number; y: number; color: string };
-type FormationSnapshot = { time: number; points: Array<{ x: number; y: number; color: number }> };
-type StageCorner = { x: number; y: number };
+type FormationPoint = Omit<SavedFormationPoint, "color"> & { color: string };
+type FormationSnapshot = SavedFormationSnapshot;
+type StageCorner = SavedStageCorner;
 const FORMATION_COLORS = ["#ffe600", "#ff5b9a", "#4de1ff", "#a78bfa", "#ff9f43", "#68e39a", "#ff6b6b", "#5eead4", "#c084fc", "#facc15"];
 
-export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onError, loopOne = false, highlights = NO_HIGHLIGHTS }: Props) {
+export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onError, loopOne = false, highlights = NO_HIGHLIGHTS,
+  focusRange, onFocusRangeEnd }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YTPlayer | null>(null);
@@ -81,6 +86,10 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
 
   const onErrorRef = useRef(onError);
   const playingRef = useRef(false);
+  const focusEndRef = useRef(onFocusRangeEnd);
+  const focusRangeRef = useRef(focusRange);
+  const focusEndHandledRef = useRef(false);
+  const loadedFocusKeyRef = useRef(focusRange?.key ?? "");
   const rateRef = useRef(1);
   const qualityRef = useRef("auto");
   const pauseAfterLoadRef = useRef(false); // เปลี่ยนความละเอียดตอนหยุดอยู่ → โหลดใหม่แล้วหยุดต่อ
@@ -115,15 +124,21 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const [calibrationArmed, setCalibrationArmed] = useState(false);
   const [calibrationMarks, setCalibrationMarks] = useState<StageCorner[]>([]);
   const [stageCorners, setStageCorners] = useState<StageCorner[]>([]);
+  const [editingFormation, setEditingFormation] = useState(false);
+  const [selectedFormationIndex, setSelectedFormationIndex] = useState(0);
+  const [formationDirty, setFormationDirty] = useState(false);
+  const draggingPointRef = useRef<number | null>(null);
 
   useEffect(() => {
     onEndedRef.current = onEnded;
     onErrorRef.current = onError;
     loopOneRef.current = loopOne;
+    focusEndRef.current = onFocusRangeEnd;
+    focusRangeRef.current = focusRange;
     hlRef.current = highlights;
     activeHlRef.current = activeHl;
     loopHlRef.current = loopHl;
-  }, [onEnded, onError, loopOne, highlights, activeHl, loopHl]);
+  }, [onEnded, onError, loopOne, highlights, activeHl, loopHl, focusRange, onFocusRangeEnd]);
 
   // เปลี่ยนคลิป: ล้างท่อนที่เลือกไว้
   useEffect(() => {
@@ -135,13 +150,18 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
 
   useEffect(() => {
     setFormationPoints([]);
-    setFormationTimeline([]);
-    setFormationStatus("off");
+    const saved = readSavedFormations(videoId);
+    const corners = readStageCalibration(videoId);
+    setFormationTimeline(saved ?? []);
+    setFormationStatus(saved?.length ? "ready" : "off");
     setFormationStage(null);
     setFormationError(null);
     setCalibrationArmed(false);
     setCalibrationMarks([]);
-    setStageCorners([]);
+    setStageCorners(corners ?? []);
+    setEditingFormation(false);
+    setFormationDirty(false);
+    setSelectedFormationIndex(0);
     formationAbortRef.current?.abort();
     formationAbortRef.current = null;
   }, [videoId]);
@@ -149,16 +169,22 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   useEffect(() => {
     if (formationStatus !== "ready" || formationTimeline.length === 0) return;
     let snapshot: FormationSnapshot | undefined;
-    for (const item of formationTimeline) {
+    let snapshotIndex = -1;
+    for (let index = 0; index < formationTimeline.length; index++) {
+      const item = formationTimeline[index];
       if (item.time > time) break;
       snapshot = item;
+      snapshotIndex = index;
     }
+    if (!editingFormation && snapshotIndex >= 0) setSelectedFormationIndex(snapshotIndex);
     setFormationPoints(snapshot?.points.map((point) => ({
       x: point.x,
       y: point.y,
       color: FORMATION_COLORS[point.color % FORMATION_COLORS.length],
+      name: point.name,
+      track_id: point.track_id,
     })) ?? []);
-  }, [time, formationTimeline, formationStatus]);
+  }, [time, formationTimeline, formationStatus, editingFormation]);
 
   const showFlash = useCallback((text: string, pos: FlashState["pos"]) => {
     setFlash({ text, pos });
@@ -308,6 +334,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
             modestbranding: 1,
             iv_load_policy: 3,
             cc_load_policy: 0, // ไม่เปิดซับไตเติลของ YouTube
+            start: Math.floor(focusRangeRef.current?.start ?? 0),
             origin: window.location.origin,
           },
           events: {
@@ -375,16 +402,29 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     if (!ready || !playerRef.current || loadedIdRef.current === videoId) return;
     loadedIdRef.current = videoId;
     setError(null);
-    setTime(0);
+    const startSeconds = focusRangeRef.current?.start ?? 0;
+    loadedFocusKeyRef.current = focusRangeRef.current?.key ?? "";
+    focusEndHandledRef.current = false;
+    setTime(startSeconds);
     setDuration(0);
     playerRef.current.loadVideoById({
       videoId,
+      startSeconds,
       suggestedQuality: qualityRef.current === "auto" ? undefined : qualityRef.current,
     });
     applyVolume();
     applyRate();
     hideCaptions();
   }, [videoId, ready, applyVolume, applyRate, hideCaptions]);
+
+  useEffect(() => {
+    if (!ready || !focusRange || loadedFocusKeyRef.current === focusRange.key) return;
+    loadedFocusKeyRef.current = focusRange.key;
+    focusEndHandledRef.current = false;
+    setTime(focusRange.start);
+    playerRef.current?.seekTo(focusRange.start, true);
+    playerRef.current?.playVideo();
+  }, [focusRange?.key, ready]);
 
   // อัปเดตเวลาของ Seekbar ทุก 250ms
   useEffect(() => {
@@ -395,6 +435,14 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
       const t = safe(p.getCurrentTime());
       setTime(t);
       setDuration(safe(p.getDuration()));
+
+      const range = focusRangeRef.current;
+      if (range && playingRef.current && !focusEndHandledRef.current && t >= range.end) {
+        focusEndHandledRef.current = true;
+        p.pauseVideo();
+        focusEndRef.current?.();
+        return;
+      }
 
       // วนซ้ำเฉพาะท่อนที่เลือก: เล่นถึงท้ายท่อนแล้วกลับไปต้นท่อน (ถ้าผู้ใช้กรอข้ามไปไกลกว่านั้นเองจะไม่ดึงกลับ)
       const seg = activeHlRef.current !== null ? hlRef.current[activeHlRef.current] : undefined;
@@ -555,7 +603,9 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
       if (next.length === 4) {
         // Convert the visible corner order to the original, unmirrored frame.
         const ordered = mirrored ? [next[1], next[0], next[3], next[2]] : next;
-        setStageCorners(ordered.map((point) => ({ x: mirrored ? 1 - point.x : point.x, y: point.y })));
+        const corners = ordered.map((point) => ({ x: mirrored ? 1 - point.x : point.x, y: point.y }));
+        setStageCorners(corners);
+        saveStageCalibration(videoId, corners);
         setCalibrationArmed(false);
       }
       return;
@@ -581,6 +631,30 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
       togglePlay();
     }, DOUBLE_TAP_MS);
     lastTap.current = { side, at: now, timer };
+  };
+
+  const updateFormationPoint = (pointIndex: number, patch: Partial<Omit<FormationPoint, "color">>) => {
+    setFormationTimeline((timeline) => timeline.map((snapshot, index) => index !== selectedFormationIndex ? snapshot : {
+      ...snapshot,
+      points: snapshot.points.map((point, i) => i === pointIndex ? { ...point, ...patch } : point),
+    }));
+    setFormationDirty(true);
+  };
+
+  const moveFormationDot = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (draggingPointRef.current === null || !editingFormation) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    updateFormationPoint(draggingPointRef.current, {
+      x: mirrored ? 1 - Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)) : Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)),
+      y: Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height)),
+    });
+  };
+
+  const activeFormation = formationTimeline[selectedFormationIndex];
+  const activeFormationPoint = activeFormation?.points ?? [];
+  const saveFormationEdits = () => {
+    saveFormations(videoId, formationTimeline);
+    setFormationDirty(false);
   };
 
   const commitSeek = () => {
@@ -662,7 +736,11 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
         };
         throw new Error(messages[result.reason ?? ""] ?? "วิเคราะห์แถวไม่สำเร็จ");
       }
-      setFormationTimeline(result.formations ?? []);
+      const formations = result.formations ?? [];
+      saveFormations(videoId, formations);
+      setFormationTimeline(formations);
+      setSelectedFormationIndex(0);
+      setFormationDirty(false);
       setFormationStatus("ready");
     }
     catch (error) {
@@ -804,13 +882,23 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
         {["loading", "running", "ready"].includes(formationStatus) && (
           <aside className="yp-formation-map" aria-label="แผนผังแถว">
             <strong>แผนผังแถวตามเวลาในคลิป</strong>
-            <div className="yp-formation-map__stage" aria-hidden="true">
-              {formationPoints.map((point, index) => (
+            <div className={`yp-formation-map__stage ${editingFormation ? "is-editing" : ""}`}
+              onPointerMove={moveFormationDot}
+              onPointerUp={() => { draggingPointRef.current = null; }}
+              onPointerCancel={() => { draggingPointRef.current = null; }}>
+              {(editingFormation ? activeFormationPoint.map((point) => ({ ...point, color: FORMATION_COLORS[point.color % FORMATION_COLORS.length] })) : formationPoints).map((point, index) => (
                 <span
-                  key={index}
+                  key={point.track_id ?? index}
                   className="yp-formation-map__dot"
                   style={{ left: `${(mirrored ? 1 - point.x : point.x) * 100}%`, top: `${point.y * 100}%`, background: point.color }}
-                />
+                  onPointerDown={editingFormation ? (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    draggingPointRef.current = index;
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                  } : undefined}
+                  title={point.name || `นักเต้น ${index + 1}`}
+                >{point.name && <span className="yp-formation-map__name">{point.name}</span>}</span>
               ))}
               {formationPoints.length === 0 && <span className="yp-formation-map__empty">···</span>}
             </div>
@@ -823,6 +911,38 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
                 : formationTimeline.length === 0 ? "ยังไม่พบรูปแบบแถวที่มั่นใจพอ"
                   : `แถว ${formationTimeline.filter((item) => item.time <= time).length} / ${formationTimeline.length} · ${formationPoints.length} คน · เปลี่ยนตามเวลา ${formatTime(time)}`}
             </small>
+            {formationStatus === "ready" && formationTimeline.length > 0 && (
+              <div className="yp-formation-editor">
+                <label>ฟอร์เมชันที่แก้ไข
+                  <select value={selectedFormationIndex} onChange={(event) => {
+                    const index = Number(event.target.value);
+                    setSelectedFormationIndex(index);
+                    const targetTime = formationTimeline[index]?.time ?? 0;
+                    setTime(targetTime);
+                    playerRef.current?.seekTo(targetTime, true);
+                    playerRef.current?.pauseVideo();
+                  }}>
+                    {formationTimeline.map((item, index) => <option key={`${item.time}-${index}`} value={index}>แถว {index + 1} · {formatTime(item.time)}</option>)}
+                  </select>
+                </label>
+                <button type="button" onClick={() => setEditingFormation((value) => !value)}>
+                  {editingFormation ? "เสร็จสิ้นการแก้ไข" : "แก้ไขจุดและชื่อคน"}
+                </button>
+                {editingFormation && <div className="yp-formation-editor__people">
+                  {activeFormationPoint.map((point, index) => (
+                    <label key={point.track_id ?? index}>
+                      <span style={{ color: FORMATION_COLORS[point.color % FORMATION_COLORS.length] }}>●</span>
+                      <input aria-label={`ชื่อนักเต้นจุด ${index + 1}`} placeholder={`นักเต้น ${index + 1}`} value={point.name ?? ""}
+                        onChange={(event) => updateFormationPoint(index, { name: event.target.value })} />
+                      <small>{Math.round(point.x * 100)}%, {Math.round(point.y * 100)}%</small>
+                    </label>
+                  ))}
+                </div>}
+                <button type="button" onClick={saveFormationEdits} disabled={!formationDirty}>
+                  {formationDirty ? "บันทึกฟอร์เมชันที่แก้แล้ว" : "บันทึกแล้ว"}
+                </button>
+              </div>
+            )}
           </aside>
         )}
       </div>
