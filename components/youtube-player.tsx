@@ -634,10 +634,24 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   };
 
   const updateFormationPoint = (pointIndex: number, patch: Partial<Omit<FormationPoint, "color">>) => {
-    setFormationTimeline((timeline) => timeline.map((snapshot, index) => index !== selectedFormationIndex ? snapshot : {
-      ...snapshot,
-      points: snapshot.points.map((point, i) => i === pointIndex ? { ...point, ...patch } : point),
-    }));
+    setFormationTimeline((timeline) => {
+      const editedPoint = timeline[selectedFormationIndex]?.points[pointIndex];
+      const isNameChange = Object.prototype.hasOwnProperty.call(patch, "name");
+      if (isNameChange && editedPoint?.track_id !== undefined) {
+        // A dancer keeps one track ID across the timeline, so one name edit
+        // should label that dancer in every formation snapshot for this video.
+        return timeline.map((snapshot) => ({
+          ...snapshot,
+          points: snapshot.points.map((point) => point.track_id === editedPoint.track_id
+            ? { ...point, name: patch.name }
+            : point),
+        }));
+      }
+      return timeline.map((snapshot, index) => index !== selectedFormationIndex ? snapshot : {
+        ...snapshot,
+        points: snapshot.points.map((point, i) => i === pointIndex ? { ...point, ...patch } : point),
+      });
+    });
     setFormationDirty(true);
   };
 
@@ -928,7 +942,9 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
                 <button type="button" onClick={() => setEditingFormation((value) => !value)}>
                   {editingFormation ? "เสร็จสิ้นการแก้ไข" : "แก้ไขจุดและชื่อคน"}
                 </button>
-                {editingFormation && <div className="yp-formation-editor__people">
+                {editingFormation && <>
+                  <small>ชื่อจะผูกกับนักเต้นคนเดิมและใช้ร่วมกันทุกฟอร์เมชันในคลิปนี้</small>
+                  <div className="yp-formation-editor__people">
                   {activeFormationPoint.map((point, index) => (
                     <label key={point.track_id ?? index}>
                       <span style={{ color: FORMATION_COLORS[point.color % FORMATION_COLORS.length] }}>●</span>
@@ -937,7 +953,8 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
                       <small>{Math.round(point.x * 100)}%, {Math.round(point.y * 100)}%</small>
                     </label>
                   ))}
-                </div>}
+                  </div>
+                </>}
                 <button type="button" onClick={saveFormationEdits} disabled={!formationDirty}>
                   {formationDirty ? "บันทึกฟอร์เมชันที่แก้แล้ว" : "บันทึกแล้ว"}
                 </button>
