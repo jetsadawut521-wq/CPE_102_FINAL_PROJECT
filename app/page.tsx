@@ -10,11 +10,12 @@ import YouTubeSearch from "@/components/youtube-search";
 import WatchHistory from "@/components/watch-history";
 import { useWatchHistory } from "@/lib/use-watch-history";
 import { useAutoHighlights } from "@/lib/auto-highlights";
+import { readSavedFormations, readSavedHighlights } from "@/lib/analysis-storage";
 import { isLikedId, usePlaylists, type PlayMode, type Playlist } from "@/lib/playlist";
 import type { VideoItem } from "@/lib/youtube";
 
 const MODE_KEY = "muverse:playmode";
-const MODE_LABEL: Record<PlayMode, string> = { sequential: "วนซ้ำแบบเรียง", shuffle: "วนซ้ำแบบสุ่ม", single: "วนซ้ำคลิปเดียว" };
+const MODE_LABEL: Record<PlayMode, string> = { sequential: "วนซ้ำแบบเรียง", shuffle: "วนซ้ำแบบสุ่ม", single: "วนซ้ำคลิปเดียว", "random-dance": "Random Dance" };
 
 // สถานะการสุ่มของ playlist ที่กำลังเล่น (เก็บใน ref เพราะไม่ต้องให้หน้า re-render)
 interface ShuffleSession {
@@ -67,15 +68,24 @@ export default function Page() {
   const [selectedId, setSelectedId] = useState<string | null>(null); // playlist ที่เปิดดู/เป็นปลายทางของปุ่ม “+ playlist”
   const [sourceId, setSourceId] = useState<string | null>(null); // playlist ที่กำลังเล่นต่อเนื่องอยู่ (null = เล่นคลิปเดี่ยวจากการค้นหา)
   const [mode, setMode] = useState<PlayMode>("sequential");
+  const [analysisRevision, setAnalysisRevision] = useState(0);
+  const [focusSerial, setFocusSerial] = useState(0);
   const auto = useAutoHighlights(current?.id); // ท่อนฮุคที่ระบบวิเคราะห์ให้ของคลิปที่กำลังเล่น
   const [homeKey, setHomeKey] = useState(0); // เปลี่ยนค่านี้เพื่อรีเซ็ตหน้าค้นหา/หน้า playlist กลับสู่สภาพเริ่มต้น
   const session = useRef<ShuffleSession>({ sourceId: null, history: [], cursor: -1, round: new Set() });
+  const randomSkipGuard = useRef<string | null>(null);
+
+  useEffect(() => {
+    const refresh = () => setAnalysisRevision((value) => value + 1);
+    window.addEventListener("muverse:analysis-updated", refresh);
+    return () => window.removeEventListener("muverse:analysis-updated", refresh);
+  }, []);
 
   // จำวิธีเล่นที่เลือกไว้ (อ่านหลัง mount เพื่อกัน hydration ไม่ตรงกับฝั่งเซิร์ฟเวอร์)
   useEffect(() => {
     try {
       const saved = window.localStorage.getItem(MODE_KEY);
-      if (saved === "sequential" || saved === "shuffle" || saved === "single") setMode(saved);
+      if (saved === "sequential" || saved === "shuffle" || saved === "single" || saved === "random-dance") setMode(saved);
     } catch {
       /* ใช้ค่าเริ่มต้น */
     }
@@ -128,6 +138,7 @@ export default function Page() {
     else window.history.replaceState(entry, "");
     setCurrent(video);
     setSourceId(fromPlaylistId);
+    setFocusSerial((value) => value + 1);
     // เครื่องเล่นอยู่ด้านบน เลื่อนขึ้นไปให้เห็นทันทีหลังเลือกคลิป (ตอนเล่นเพลงถัดไปอัตโนมัติไม่เลื่อน)
     if (scroll) window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -163,11 +174,23 @@ export default function Page() {
     }
     // เปลี่ยนมาโหมดสุ่มระหว่างเล่น: เริ่มรอบใหม่โดยนับเพลงที่กำลังเล่นว่าเล่นแล้ว
     if (next === "shuffle" && source && current) startSession(source.id, current.id);
+    if (next === "random-dance") {
+      setFocusSerial((value) => value + 1);
+      const playlist = selected ?? source;
+      const eligible = playlist?.items.filter((video) =>
+        !!readSavedHighlights(video.id)?.length && !!readSavedFormations(video.id)?.length) ?? [];
+      if (playlist && eligible.length) {
+        const start = current && eligible.some((video) => video.id === current.id)
+          ? current : eligible[Math.floor(Math.random() * eligible.length)];
+        startSession(playlist.id, start.id);
+        if (start.id !== current?.id || source?.id !== playlist.id) play(start, playlist.id, false, "replace");
+      }
+    }
   }
 
   // สุ่มเพลงถัดไปจากเพลงที่ยังไม่ได้เล่นในรอบนี้ ถ้าครบทุกเพลงแล้วเริ่มรอบใหม่ (เพลงที่เพิ่งจบจะไม่มาซ้ำทันที)
   function pickShuffleNext(items: VideoItem[], currentId: string): VideoItem | null {
-    if (items.length < 2) return null;
+    if (items.length < 2) return items[0] ?? null;
     const s = session.current;
     let pool = items.filter((v) => !s.round.has(v.id));
     if (pool.length === 0) {
@@ -217,6 +240,15 @@ export default function Page() {
     const idx = source.items.findIndex((v) => v.id === current.id);
     if (idx < 0) return; // คลิปปัจจุบันถูกลบออกจาก playlist ไปแล้ว
 
+    if (mode === "random-dance") {
+      const eligible = source.items.filter((video) => {
+        const highlights = readSavedHighlights(video.id);
+        const formations = readSavedFormations(video.id);
+        return !!highlights?.length && !!formations?.length;
+      });
+      if (!eligible.length) return;
+      return stepShuffle({ ...source, items: eligible }, current, delta, scroll);
+    }
     if (mode === "shuffle") return stepShuffle(source, current, delta, scroll);
 
     // วนซ้ำแบบเรียง: ตามลำดับที่นำเข้า จบเพลงสุดท้ายกลับไปเพลงแรก
@@ -225,6 +257,59 @@ export default function Page() {
     if (!nextVideo || nextVideo.id === current.id) return; // มีเพลงเดียว
     play(nextVideo, source.id, scroll, "replace");
   }
+
+  function playAll(items: VideoItem[]) {
+    if (mode === "random-dance") {
+      const eligible = items.filter((video) => {
+        const highlights = readSavedHighlights(video.id);
+        const formations = readSavedFormations(video.id);
+        return !!highlights?.length && !!formations?.length;
+      });
+      if (!eligible.length) {
+        window.alert("ยังไม่มีคลิปที่บันทึกผลไฮไลท์และฟอร์เมชันครบทั้งสองอย่าง");
+        return;
+      }
+      const first = eligible[Math.floor(Math.random() * eligible.length)];
+      startSession(selected?.id ?? "", first.id);
+      play(first, selected?.id ?? null);
+      return;
+    }
+    const first = items[0];
+    if (first) play(first, selected?.id ?? null);
+  }
+
+  const randomDanceEligibleCount = (selected?.items ?? []).filter((video) =>
+    !!readSavedHighlights(video.id)?.length && !!readSavedFormations(video.id)?.length).length;
+  void analysisRevision;
+  const currentHasSavedFormation = current ? !!readSavedFormations(current.id)?.length : false;
+  const firstHighlight = mode === "random-dance" && currentHasSavedFormation
+    ? [...auto.segments].sort((a, b) => a.start - b.start)[0] : undefined;
+  const focusRange = current && firstHighlight ? {
+    start: Math.max(0, firstHighlight.start - 4),
+    end: firstHighlight.end + 4,
+    key: `${current.id}:${focusSerial}`,
+  } : undefined;
+
+  useEffect(() => {
+    if (mode !== "random-dance" || !source || !current) return;
+    const eligible = source.items.filter((video) =>
+      !!readSavedHighlights(video.id)?.length && !!readSavedFormations(video.id)?.length);
+    if (eligible.some((video) => video.id === current.id)) {
+      randomSkipGuard.current = null;
+      return;
+    }
+    const guardKey = `${source.id}:${current.id}:${analysisRevision}`;
+    if (randomSkipGuard.current === guardKey) return;
+    randomSkipGuard.current = guardKey;
+    if (!eligible.length) {
+      setCurrent(null);
+      setSourceId(null);
+      return;
+    }
+    const next = eligible[Math.floor(Math.random() * eligible.length)];
+    startSession(source.id, next.id);
+    play(next, source.id, false, "replace");
+  }, [mode, source?.id, current?.id, analysisRevision]);
 
   const addedIds = new Set(target?.items.map((v) => v.id) ?? []);
 
@@ -262,6 +347,8 @@ export default function Page() {
           <YouTubePlayer
             videoId={current.id}
             onEnded={() => step(1, false)}
+            focusRange={focusRange}
+            onFocusRangeEnd={() => step(1, false)}
             loopOne={!!source && mode === "single"}
             highlights={auto.segments}
           />
@@ -293,6 +380,7 @@ export default function Page() {
         onToggleLike={pl.toggleLike}
         mode={mode}
         onModeChange={changeMode}
+        onPlayAll={playAll}
         onSelect={setSelectedId}
         onCreate={(name) => setSelectedId(pl.createPlaylist(name))}
         onRename={pl.renamePlaylist}
@@ -300,12 +388,18 @@ export default function Page() {
         onDelete={pl.deletePlaylist}
         onPlay={(video) => {
           if (!selected) return;
+          if (mode === "random-dance" &&
+            (!readSavedHighlights(video.id)?.length || !readSavedFormations(video.id)?.length)) {
+            window.alert("คลิปนี้ยังไม่มีผลไฮไลท์และฟอร์เมชันที่บันทึกครบ จึงข้ามในโหมด Random Dance");
+            return;
+          }
           recordManual(selected.id, video.id);
           play(video, selected.id);
         }}
         onRemove={(videoId) => selected && pl.removeTrack(selected.id, videoId)}
         onMove={(index, dir) => selected && pl.moveTrack(selected.id, index, dir)}
       />
+      {mode === "random-dance" && selected && <p><small>Random Dance: พร้อมเล่น {randomDanceEligibleCount}/{selected.items.length} คลิปที่มีผลไฮไลท์และฟอร์เมชันบันทึกแล้ว · สุ่มไม่ซ้ำก่อนวนรอบใหม่</small></p>}
 
       <YouTubeSearch
         key={`search-${homeKey}`}
