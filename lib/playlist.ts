@@ -16,7 +16,7 @@ export interface Playlist {
 const STORAGE_KEY = "muverse:playlists";
 
 /** วิธีเล่น: เรียงตามลำดับที่นำเข้า (วนซ้ำ) / สุ่ม (วนซ้ำ ไม่ซ้ำจนกว่าจะครบทุกเพลง) / วนซ้ำคลิปเดียว */
-export type PlayMode = "sequential" | "shuffle" | "single" | "random-dance";
+export type PlayMode = "sequential" | "shuffle" | "single";
 
 /** playlist พิเศษ “ถูกใจ”: กดหัวใจที่คลิปไหนก็เข้ามาอยู่ที่นี่ทันที มีเสมอ ลบ/เปลี่ยนชื่อไม่ได้ */
 export const LIKED_ID = "liked";

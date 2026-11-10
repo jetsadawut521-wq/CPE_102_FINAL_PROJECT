@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { selectHighlightProposal, retainDisplayedHighlights } from "./audio-highlights";
 import type { AutoSegment, HighlightsResponse } from "@/lib/highlight-analysis";
-import { readSavedHighlights, saveAnalyzedHighlights } from "@/lib/analysis-storage";
 
 type Status = "idle" | "loading" | "ready" | "none" | "error";
 
@@ -43,13 +42,6 @@ export function useAutoHighlights(videoId: string | undefined): {
       setState({ id: videoId, status: cached.segments.length > 0 ? "ready" : "none", ...cached });
       return;
     }
-    const saved = readSavedHighlights(videoId);
-    if (saved) {
-      const result: Result = { segments: saved };
-      cache.set(videoId, result);
-      setState({ id: videoId, status: saved.length > 0 ? "ready" : "none", ...result });
-      return;
-    }
     setState({ id: videoId, status: "loading", segments: NO_SEGMENTS });
     const ac = new AbortController();
     fetch(`/api/youtube/highlights?v=${encodeURIComponent(videoId)}`, { signal: AbortSignal.any([ac.signal, AbortSignal.timeout(30000)]) })
@@ -61,7 +53,6 @@ export function useAutoHighlights(videoId: string | undefined): {
         if (data.error) throw new Error(data.error);
         const result: Result = { source: data.source, segments: data.segments ?? NO_SEGMENTS, reason: data.reason };
         cache.set(videoId, result);
-        saveAnalyzedHighlights(videoId, result.segments);
         setState({ id: videoId, status: result.segments.length > 0 ? "ready" : "none", ...result });
       })
       .catch((err: unknown) => {

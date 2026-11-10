@@ -76,10 +76,6 @@ worker จำกัด CPU ไม่เกิน 2 เธรด แต่เว�
 ถ้าคนไม่ปรากฏพร้อมกันในเฟรมใดเลย ระบบยังอาจนับจำนวนสมาชิกทั้งหมดไม่ครบ
 ต้องมี FFmpeg และ worker ใน Ubuntu/WSL เปิดค้างเหมือนบริการวิเคราะห์เสียง
 
-หลังวิเคราะห์เสร็จ ตัวเล่นเลือกแก้ formation ทุกแถวใน timeline ได้: เลือกแถวจากรายการ ลากจุดบนแผนผัง ใส่ชื่อนักเต้น แล้วกดบันทึก การแก้ไขและ calibration เก็บใน localStorage ของเบราว์เซอร์แยกตาม video ID; ดูขั้นตอนติดตั้งและใช้งานแบบครบได้ที่ [คู่มือส่งต่องาน](../../docs/DEVELOPER_GUIDE.md).
-
-Random Dance ใน playlist ใช้คลิปที่มีทั้งผลไฮไลท์และ formation timeline ที่บันทึกแล้วเท่านั้น และโหลด formation ของ video ID ที่กำลังเล่นมาประกบ ตัวแก้ไข formation ของ Muverse เขียนแยก โดยอ้างอิง workflow ของ [GridStage](https://github.com/ChangShengHsun/GridStage); ไม่ได้คัดลอก source code ของ GridStage.
-
 ## ขั้นตอนและเป้าหมายความเร็วของเสียง
 
 1. yt-dlp ดึง audio stream ของคลิปเดิมลงไฟล์ชั่วคราว โดย fast ไม่สร้าง WAV เพิ่ม
