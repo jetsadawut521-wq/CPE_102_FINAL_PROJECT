@@ -140,7 +140,7 @@ def run_formation_job(video_id, job_key, stage_corners, calibration_key):
         DOWNLOAD_LOCK.acquire()
         download_lock_held = True
         env = os.environ.copy()
-        threads = str(max(1, min(2, cpu_threads())))
+        threads = str(cpu_threads())
         env["FORMATION_THREADS"] = threads
         for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
             env[name] = threads
