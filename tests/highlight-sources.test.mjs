@@ -24,7 +24,7 @@ test('pre/post chorus and isolated timestamp comments are not complete hooks', (
 });
 
 test('full comment section lists preserve each individual boundary and explain their source', () => {
-  const result = chapterHighlights('', [{ text: '0:00 intro\n0:30 chorus 1\n0:50 verse\n1:20 chorus 2\n1:42 bridge', likes: 0 }], 130);
+  const result = chapterHighlights('', [{ text: '0:00 intro\n0:30 Set Me Free chorus 1\n0:50 verse 1\n1:20 Set Me Free chorus 2\n1:42 bridge', likes: 0 }], 130);
   assert.deepEqual(result.map(({ start, end }) => [start, end]), [[30, 50], [80, 102]]);
   assert.equal(result[0].confidence, 'medium');
   assert.match(result[0].evidence, /คอมเมนต์/);
@@ -95,4 +95,37 @@ test('PSYCHO reference remains unresolved: generic timestamps cannot fabricate i
   const ref = references.psycho;
   assert.equal(ref.referenceStart, 160);
   assert.deepEqual(chapterHighlights('', ref.comments, ref.duration), []);
+});
+
+test('reaction sentences with chorus timestamps or ranges are not section boundaries', () => {
+  for (const text of [
+    '2:12-2:17 i love this part of the chorus',
+    'i love this part of the chorus 2:12-2:17',
+    '2:12-2:17 my favorite chorus ever',
+    '2:12-2:17 ชอบท่อนฮุคตรงนี้มาก',
+    '0:30 love this chorus\n0:50 nice moves\n1:20 love this chorus\n1:42 amazing',
+  ]) {
+    assert.deepEqual(chapterHighlights('', [{ text, likes: 99999 }], 205), [], text);
+    assert.equal(isChorusLabel(text), false, text);
+  }
+});
+test('reaction timestamps cannot shift lyric hooks even with matching repeated spacing', () => {
+  const occurrences = [{ start: 30, end: 60 }, { start: 90, end: 120 }];
+  assert.equal(inferChorusOffset(occurrences, ['0:40 love this part of the chorus', '1:40 love this part of the chorus'], 205), undefined);
+  assert.equal(inferChorusOffset(occurrences, ['0:40-0:55 chorus 1\n1:40-1:55 chorus 2'], 205), 10);
+});
+test('clear numbered section labels still work in English and Thai', () => {
+  for (const label of ['Chorus 1', 'first chorus', 'last chorus (dance break)', 'ฮุค 1', 'ท่อนฮุคแรก']) assert.equal(isChorusLabel(label), true, label);
+});
+
+test('actual SEVENTEEN choreography reaction cannot become a five-second chorus chapter', () => {
+  const reference = JSON.parse(fs.readFileSync(new URL('./fixtures/comment-reaction-reference.json', import.meta.url), 'utf8'));
+  assert.deepEqual(reference.observedWrongRange, { start: 132, end: 137 });
+  assert.deepEqual(chapterHighlights('', [reference.comment], 205), []);
+});
+
+test('separate bare chorus timestamps do not become start anchors just by repeating', () => {
+  const occurrences = [{ start: 30, end: 60 }, { start: 90, end: 120 }];
+  assert.equal(inferChorusOffset(occurrences, ['0:40 chorus', '1:40 chorus'], 205), undefined);
+  assert.equal(inferChorusOffset(occurrences, ['0:40 chorus starts', '1:40 chorus starts'], 205), 10);
 });
