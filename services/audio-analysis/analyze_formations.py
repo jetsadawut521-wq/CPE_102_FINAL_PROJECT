@@ -177,11 +177,11 @@ def collect_detections(paths, root, stage_corners):
         batch_paths = paths[batch_start:batch_start + batch_size]
         # Crowded choreography often produces overlapping person boxes. A
         # higher NMS IoU threshold keeps adjacent dancers instead of suppressing
-        # one as a duplicate; a modestly lower confidence threshold helps with
-        # partially occluded dancers. Stage-polygon filtering below still
-        # rejects detections outside the calibrated performance area.
+        # one as a duplicate; a lower confidence threshold helps with small,
+        # partially occluded dancers in crowded formations. Stage-polygon
+        # filtering below still rejects detections outside the calibrated area.
         results = model.predict([str(path) for path in batch_paths], imgsz=640, batch=batch_size,
-                                conf=0.16, iou=0.7, max_det=24, device="cpu", verbose=False)
+                                conf=0.10, iou=0.75, max_det=24, device="cpu", verbose=False)
         for offset, result in enumerate(results):
             index = batch_start + offset
             # Ultralytics stores the decoded source frame in BGR order.
@@ -429,7 +429,7 @@ def analyze(video_id, root, stage_corners):
     formations = build_timeline(samples)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v15", "formations": formations}
+    return {"engine": "formation-v16", "formations": formations}
 
 
 if __name__ == "__main__":
