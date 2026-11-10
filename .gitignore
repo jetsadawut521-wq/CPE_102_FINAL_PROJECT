@@ -1,4 +1,10 @@
-node_modules/
-.next/
+node_modules
+.next
+out
 .env.local
-data/
+.env*.local
+*.tsbuildinfo
+.DS_Store
+.venv/
+__pycache__/
+*.pyc

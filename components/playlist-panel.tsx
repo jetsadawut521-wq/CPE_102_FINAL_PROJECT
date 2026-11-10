@@ -29,6 +29,7 @@ interface Props {
   onSetCover: (id: string, cover?: string) => void;
   onDelete: (id: string) => void;
   onPlay: (video: VideoItem) => void;
+  onPlayAll: (videos: VideoItem[]) => void;
   onRemove: (videoId: string) => void;
   onMove: (index: number, direction: -1 | 1) => void;
 }
@@ -130,6 +131,7 @@ export default function PlaylistPanel({
   onSetCover,
   onDelete,
   onPlay,
+  onPlayAll,
   onRemove,
   onMove,
 }: Props) {
@@ -174,7 +176,7 @@ export default function PlaylistPanel({
             type="button"
             className="pl-play-all"
             disabled={detail.items.length === 0}
-            onClick={() => onPlay(detail.items[0])}
+            onClick={() => onPlayAll(detail.items)}
             aria-label="เล่นทั้งหมด"
             title="เล่นทั้งหมด"
           >
@@ -187,6 +189,7 @@ export default function PlaylistPanel({
                 ["sequential", "วนซ้ำแบบเรียง"],
                 ["shuffle", "วนซ้ำแบบสุ่ม"],
                 ["single", "วนซ้ำคลิปเดียว"],
+                ["random-dance", "Random Dance"],
               ] as const
             ).map(([value, label]) => (
               <button

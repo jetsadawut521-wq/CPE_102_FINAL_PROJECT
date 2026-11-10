@@ -1,34 +1,73 @@
 import { cleanSongTitle, normalizeLine, parseChapters, parseTimestamps, type AutoSegment, type Chapter, type CommentInput, type LyricLine, type Occurrence } from "./highlight-analysis";
 
-// Explicit section names only: "pre-chorus", "post chorus", "chorus tutorial" are not chorus boundaries.
+// A section name is a boundary declaration. Mentioning "the chorus" inside a
+// reaction sentence (even beside a timestamp range) is not such a declaration.
+const CLOCK_IN_LABEL = /(?:\d{1,2}:)?\d{1,2}:[0-5]\d/g;
+const ORDINAL = "(?:[0-9]+(?:st|nd|rd|th)?|first|second|third|fourth|last|final|แรก|สอง|สาม|สุดท้าย)";
+function boundaryLabel(label: string): string {
+  return normalizeLine(label.replace(CLOCK_IN_LABEL, " "));
+}
+function sectionName(label: string, names: string): boolean {
+  const text = boundaryLabel(label);
+  const modifiers = "(?:repeat|repeated|ซ้ำ|dance break|instrumental|start|starts|beginning)";
+  return new RegExp(`^(?:${ORDINAL}\\s+)?(?:ท่อน\\s*)?(?:${names})(?:\\s*${ORDINAL})?(?:\\s+${modifiers})?$`, "i").test(text);
+}
+
 export function isChorusLabel(label: string): boolean {
-  return !/pre[\s-]*chorus|post[\s-]*chorus|(?:ก่อน|หลัง|พรี)\s*(?:ท่อน\s*)?ฮุ[คก]|สอน|tutorial|breakdown/i.test(label) &&
-    /\bchorus\b|\bhook\b|ฮุ[คก]|คอรัส|ท่อนสร้อย|후렴/i.test(label);
+  return sectionName(label, "chorus|hook|ฮุ[คก]|คอรัส|ท่อนสร้อย|후렴|코러스");
 }
 
 export function isDanceBreakLabel(label: string): boolean {
-  return !/tutorial|breakdown|สอน|no dance|without/i.test(label) &&
-    /dance[\s-]*break|เบร[กค]แดนซ์|แดนซ์เบร[กค]|댄스\s*브레이크/i.test(label);
+  return sectionName(label, "dance\\s*break|เบร[กค]แดนซ์|แดนซ์เบร[กค]|댄스\\s*브레이크");
+}
+
+function isSectionLabel(label: string): boolean {
+  return isChorusLabel(label) || isDanceBreakLabel(label) || sectionName(label,
+    "intro|outro|verse|pre\\s*(?:chorus|hook)|post\\s*(?:chorus|hook)|bridge|rap|break|instrumental|solo|ending|interlude|" +
+    "อินโทร|เอาท์โทร|เวิร์ส|พรีฮุ[คก]|ก่อนฮุ[คก]|บริดจ์|แร็ป|ท่อนจบ|ดนตรี|โซโล่|인트로|벌스|브릿지");
+}
+
+const CHORUS_MENTION = /\b(?:chorus|hook)\b|ฮุ[คก]|คอรัส|ท่อนสร้อย|후렴|코러스/i;
+const NON_CHORUS_SECTION = /\b(?:pre[\s-]*chorus|post[\s-]*chorus|pre[\s-]*hook|post[\s-]*hook|verse|bridge|intro|outro|dance[\s-]*break|instrumental|tutorial|breakdown)\b|พรี\s*(?:ฮุ[คก]|คอรัส)|ก่อน\s*(?:ฮุ[คก]|คอรัส)|หลัง\s*(?:ฮุ[คก]|คอรัส)|เวิร์ส|บริดจ์|อินโทร|เอาท์โทร|เบร[กค]แดนซ์|ดนตรี/i;
+const REACTION_WORDING = /\b(?:i\s+love|love\s+(?:this|that|the)|loved\s+(?:this|that)|my\s+favorite|my\s+favourite|(?:best|favorite|favourite)\s+part|beautiful|amazing|pretty|cute|nice|this\s+part|my\s+part|enjoy\s+this|great\s+part)\b|ชอบ(?:ท่อน|ช่วง|ตรง)|รัก(?:ท่อน|ช่วง|ตรง)|(?:ท่อน|ช่วง)นี้(?:ดี|สวย|มาก|คือที่สุด)/i;
+
+/** Comment labels may include song/title context, but must still name a chorus. */
+function isCommentChorusLabel(label: string): boolean {
+  const text = boundaryLabel(label);
+  if (NON_CHORUS_SECTION.test(text) || REACTION_WORDING.test(text)) return false;
+  return CHORUS_MENTION.test(text);
+}
+
+/** Accept contextual section names in a comment table so verses can be skipped, not poison the whole table. */
+function isCommentSectionLabel(label: string): boolean {
+  const text = boundaryLabel(label);
+  if (REACTION_WORDING.test(text)) return false;
+  if (isCommentChorusLabel(text) || isDanceBreakLabel(text) || isSectionLabel(text)) return true;
+  return NON_CHORUS_SECTION.test(text);
 }
 
 export function chapterHighlights(description: string, comments: CommentInput[], duration: number): AutoSegment[] {
-  const fromChapters = (chapters: Chapter[], uploader: boolean) => chapters
-    .filter((c) => (isChorusLabel(c.label) || isDanceBreakLabel(c.label)) && c.end - c.start >= 3 && c.end - c.start <= 90)
+  const fromChapters = (chapters: Chapter[], uploader: boolean, commentTable = false) => chapters
+    .filter((c) => (uploader ? isChorusLabel(c.label) || isDanceBreakLabel(c.label) :
+      (commentTable ? isCommentChorusLabel(c.label) : isChorusLabel(c.label)) || isDanceBreakLabel(c.label)) &&
+      c.end - c.start >= 3 && c.end - c.start <= 90)
     .map((c): AutoSegment => ({
       start: c.start, end: c.end,
+      origin: uploader ? "uploader" : "comment",
       kind: isDanceBreakLabel(c.label) ? "dance-break" : "chorus",
       label: `${c.label} (${uploader ? "ผู้อัปโหลดระบุ" : "คอมเมนต์ระบุ — โปรดตรวจสอบ"})`,
       confidence: uploader ? "high" : "medium",
       evidence: uploader ? "ใช้เวลาเริ่มและจบจาก chapter ของคลิปนี้ ไม่ได้เทียบเสียงหรือท่าเต้น" :
-        "ใช้รายการแบ่งท่อนในคอมเมนต์เดียวกัน ทั้งจุดเริ่มและขอบเขตถัดไป ยังไม่ได้ยืนยันด้วยเสียงหรือภาพ",
+        "คอมเมนต์ระบุช่วงท่อนฮุคพร้อมขอบเขตเวลา ใช้เป็นแหล่งข้อมูลหลัก แต่ยังไม่ได้ยืนยันด้วยเสียงหรือภาพ",
     }));
   const official = fromChapters(parseChapters(description, duration), true);
   // A full section list provides an end boundary; an isolated "1:02 chorus" does not.
   const lists = comments.map((c) => parseChapters(c.text, duration))
-    .filter((chapters) => chapters.some((c) => c.explicitEnd && (isChorusLabel(c.label) || isDanceBreakLabel(c.label))) ||
+    .filter((chapters) => chapters.every((c) => isCommentSectionLabel(c.label)))
+    .filter((chapters) => chapters.some((c) => c.explicitEnd && (isCommentChorusLabel(c.label) || isDanceBreakLabel(c.label))) ||
       (chapters.length >= 2 && chapters.some((c) => isDanceBreakLabel(c.label))) ||
-      (chapters.length >= 4 && chapters.filter((c) => isChorusLabel(c.label)).length >= 2));
-  const listed = lists.map((chapters) => fromChapters(chapters, false)).sort((a, b) => b.length - a.length)[0] ?? [];
+      (chapters.length >= 4 && chapters.filter((c) => isCommentChorusLabel(c.label)).length >= 2));
+  const listed = lists.map((chapters) => fromChapters(chapters, false, true)).sort((a, b) => b.length - a.length)[0] ?? [];
   return mergeHighlights(official, mergeHighlights(listed, supportedDanceBreakRanges(comments, duration)));
 }
 
@@ -61,7 +100,7 @@ function supportedDanceBreakRanges(comments: CommentInput[], duration: number): 
     const supporters = new Set(comments.filter((c) => parseTimestamps(c.text, duration)
       .some((stamp) => Math.abs(stamp - start) <= 2)).map((c) => normalizeLine(c.text)));
     if (supporters.size < 3 || out.some((s) => Math.min(s.end, end) > Math.max(s.start, start))) continue;
-    out.push({ start, end, kind: "dance-break", confidence: "medium",
+    out.push({ start, end, origin: "comment", kind: "dance-break", confidence: "medium",
       label: "เบรคแดนซ์ (คอมเมนต์ระบุ — โปรดตรวจสอบ)",
       evidence: `มีคอมเมนต์ระบุ dance break ใกล้จุดนี้ พร้อมช่วงเริ่ม–จบที่ระบุไว้และไทม์สแตมป์สนับสนุน ${supporters.size} ข้อความ ไม่ได้วิเคราะห์เสียงหรือภาพ`,
     });
@@ -71,8 +110,19 @@ function supportedDanceBreakRanges(comments: CommentInput[], duration: number): 
 
 /** Align by multiple explicitly labelled hook timestamps, never by arbitrary popular timestamps. */
 export function inferChorusOffset(occurrences: Occurrence[], texts: string[], duration: number): number | undefined {
-  const stamps = [...new Set(texts.flatMap((text) => text.split(/\r?\n/)
-    .filter(isChorusLabel).flatMap((line) => parseTimestamps(line, duration))))].sort((a, b) => a - b);
+  const stamps = [...new Set(texts.flatMap((text) => {
+    const chapters = parseChapters(text, duration);
+    const table = chapters.length >= 2 && chapters.every(c => isSectionLabel(c.label));
+    if (table) return chapters.filter(c => isChorusLabel(c.label)).map(c => c.start);
+    return text.split(/\r?\n/).flatMap(line => {
+      if (!isChorusLabel(line)) return [];
+      const times = parseTimestamps(line, duration);
+      // An isolated "1:02 chorus" can refer to its middle. Only an explicit
+      // start declaration or a labelled range provides an anchor on its own.
+      if (times.length === 1 && /\b(?:start|starts|beginning)\b/i.test(line)) return times;
+      return parseChapters(line, duration).filter(c => c.explicitEnd && isChorusLabel(c.label)).map(c => c.start);
+    });
+  }))].sort((a, b) => a - b);
   if (occurrences.length < 2 || stamps.length < 2 || stamps.length > 12) return undefined;
   const candidates: { offset: number; count: number; error: number }[] = [];
   for (const stamp of stamps) for (const occurrence of occurrences) {
