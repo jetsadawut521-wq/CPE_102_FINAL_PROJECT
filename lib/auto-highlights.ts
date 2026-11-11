@@ -75,6 +75,13 @@ export function useAutoHighlights(videoId: string | undefined): {
   // Independent background analysis: playback never waits for the worker.
   useEffect(() => {
     if (!videoId) return;
+    // Reuse the persisted highlights on revisits, including Random Dance.
+    // The saved segments are the result already shown to the user, so the
+    // background audio worker should not analyze the same clip again.
+    if (readSavedHighlights(videoId) !== null) {
+      setAudio({ id: videoId, segments: [], pending: false, status: "saved" });
+      return;
+    }
     const ac = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const started = Date.now();

@@ -89,7 +89,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const focusEndRef = useRef(onFocusRangeEnd);
   const focusRangeRef = useRef(focusRange);
   const focusEndHandledRef = useRef(false);
-  const loadedFocusKeyRef = useRef(focusRange?.key ?? "");
+  const loadedFocusKeyRef = useRef("");
   const rateRef = useRef(1);
   const qualityRef = useRef("auto");
   const pauseAfterLoadRef = useRef(false); // เปลี่ยนความละเอียดตอนหยุดอยู่ → โหลดใหม่แล้วหยุดต่อ
@@ -103,6 +103,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [focusCountdown, setFocusCountdown] = useState<number | null>(null);
   const [seeking, setSeeking] = useState(false);
   const [volume, setVolume] = useState(DEFAULT_VOLUME);
   const [mirrored, setMirrored] = useState(false);
@@ -349,6 +350,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
             onStateChange: (e: YTEvent) => {
               playingRef.current = e.data === YT_STATE.PLAYING;
               setPlaying(e.data === YT_STATE.PLAYING);
+              if (e.data !== YT_STATE.PLAYING) setFocusCountdown(null);
               if (e.data === YT_STATE.PLAYING) {
                 setDuration(safe(playerRef.current?.getDuration()));
                 // YouTube บางครั้งรีเซ็ตเสียงตอนเริ่มคลิปใหม่ จึงใส่ค่าที่ผู้ใช้ตั้งไว้ซ้ำทุกครั้งที่เริ่มเล่น
@@ -403,7 +405,6 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     loadedIdRef.current = videoId;
     setError(null);
     const startSeconds = focusRangeRef.current?.start ?? 0;
-    loadedFocusKeyRef.current = focusRangeRef.current?.key ?? "";
     focusEndHandledRef.current = false;
     setTime(startSeconds);
     setDuration(0);
@@ -417,14 +418,26 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     hideCaptions();
   }, [videoId, ready, applyVolume, applyRate, hideCaptions]);
 
+  const focusRangeKey = focusRange ? `${focusRange.key}:${focusRange.start}:${focusRange.end}` : "";
   useEffect(() => {
-    if (!ready || !focusRange || loadedFocusKeyRef.current === focusRange.key) return;
-    loadedFocusKeyRef.current = focusRange.key;
+    const range = focusRangeRef.current;
+    if (!ready || !range || loadedFocusKeyRef.current === focusRangeKey) return;
+    loadedFocusKeyRef.current = focusRangeKey;
     focusEndHandledRef.current = false;
-    setTime(focusRange.start);
-    playerRef.current?.seekTo(focusRange.start, true);
-    playerRef.current?.playVideo();
-  }, [focusRange?.key, ready]);
+    setTime(range.start);
+    const player = playerRef.current;
+    const currentTime = safe(player?.getCurrentTime());
+    if (Math.abs(currentTime - range.start) > 1.5) {
+      player?.loadVideoById({
+        videoId: videoIdRef.current,
+        startSeconds: range.start,
+        suggestedQuality: qualityRef.current === "auto" ? undefined : qualityRef.current,
+      });
+    } else {
+      player?.seekTo(range.start, true);
+    }
+    player?.playVideo();
+  }, [focusRangeKey, ready]);
 
   // อัปเดตเวลาของ Seekbar ทุก 250ms
   useEffect(() => {
@@ -439,10 +452,20 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
       const range = focusRangeRef.current;
       if (range && playingRef.current && !focusEndHandledRef.current && t >= range.end) {
         focusEndHandledRef.current = true;
+        setFocusCountdown(null);
         p.pauseVideo();
         focusEndRef.current?.();
         return;
       }
+
+      // แสดง 3–2–1 ในช่วงท้าย 3 วินาทีก่อนจบช่วง Random Dance
+      const nextCountdown = range && playingRef.current && !focusEndHandledRef.current
+        ? Math.ceil(range.end - t)
+        : null;
+      const visibleCountdown = nextCountdown !== null && nextCountdown >= 1 && nextCountdown <= 3
+        ? nextCountdown
+        : null;
+      setFocusCountdown((current) => current === visibleCountdown ? current : visibleCountdown);
 
       // วนซ้ำเฉพาะท่อนที่เลือก: เล่นถึงท้ายท่อนแล้วกลับไปต้นท่อน (ถ้าผู้ใช้กรอข้ามไปไกลกว่านั้นเองจะไม่ดึงกลับ)
       const seg = activeHlRef.current !== null ? hlRef.current[activeHlRef.current] : undefined;
@@ -839,6 +862,11 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
         <div className="yp-tap" onPointerUp={handleTap} aria-hidden="true">
           {flash && <span className={`yp-flash yp-flash--${flash.pos}`}>{flash.text}</span>}
         </div>
+        {focusCountdown !== null && (
+          <div className="yp-focus-countdown" aria-live="assertive" aria-label={`คลิปถัดไปใน ${focusCountdown} วินาที`}>
+            {focusCountdown}
+          </div>
+        )}
         {calibrationMarks.map((point, index) => (
           <span key={`cal-${index}`} className="yp-calibration-mark" style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}>
             {index + 1}
