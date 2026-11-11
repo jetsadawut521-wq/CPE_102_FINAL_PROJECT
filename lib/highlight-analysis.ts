@@ -12,7 +12,7 @@
 export type Confidence = "high" | "medium";
 
 export interface AutoSegment {
-  origin?: "uploader" | "comment" | "lyrics" | "audio-fast" | "audio-full";
+  origin?: "uploader" | "comment" | "lyrics" | "audio-fast" | "audio-full" | "manual";
   kind?: "chorus" | "dance-break";
   start: number; // วินาที (ตามเวลาของคลิป)
   end: number;
