@@ -65,8 +65,11 @@ export default function Page() {
   const [current, setCurrent] = useState<VideoItem | null>(null);
   const visits = useWatchHistory();
   const recordVisit = visits.record;
-  const [selectedId, setSelectedId] = useState<string | null>(null); // playlist ที่เปิดดู/เป็นปลายทางของปุ่ม “+ playlist”
+  const [selectedId, setSelectedId] = useState<string | null>(null); // playlist ที่เปิดดู
   const [sourceId, setSourceId] = useState<string | null>(null); // playlist ที่กำลังเล่นต่อเนื่องอยู่ (null = เล่นคลิปเดี่ยวจากการค้นหา)
+  const [pendingAddVideo, setPendingAddVideo] = useState<VideoItem | null>(null);
+  const [addDestinationId, setAddDestinationId] = useState("");
+  const [newPlaylistName, setNewPlaylistName] = useState("");
   const [mode, setMode] = useState<PlayMode>("sequential");
   const [analysisRevision, setAnalysisRevision] = useState(0);
   const [focusSerial, setFocusSerial] = useState(0);
@@ -112,10 +115,7 @@ export default function Page() {
     return () => window.removeEventListener("popstate", onPop);
   }, [recordVisit]);
 
-  // ใช้เฉพาะ playlist ที่ผู้ใช้เลือก/เปิดเองเป็นปลายทาง ห้ามเดาเป็น playlist แรก
   const selected = pl.playlists.find((p) => p.id === selectedId) ?? null;
-  // “ถูกใจ” มีปุ่มหัวใจแยก จึงไม่ใช่ปลายทางของปุ่ม “+ playlist”
-  const target = selected && !isLikedId(selected.id) ? selected : null;
   const source = pl.playlists.find((p) => p.id === sourceId) ?? null;
 
   // กดชื่อเว็บ: กลับหน้าหลัก หยุดเล่น ล้างผลค้นหา และกลับไปหน้ารายการ playlist (playlist และโหมดที่เลือกไว้ยังอยู่)
@@ -141,11 +141,29 @@ export default function Page() {
     if (scroll) window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  // เพิ่มคลิปได้เมื่อผู้ใช้เลือก playlist ปลายทางไว้อย่างชัดเจนแล้วเท่านั้น
+  // ให้ผู้ใช้เลือกปลายทางทุกครั้ง แทนที่จะเดา playlist ปัจจุบันหรือ playlist แรก
   function addToPlaylist(video: VideoItem) {
-    if (!target) return;
-    pl.addTrack(target.id, video);
+    setPendingAddVideo(video);
+    setAddDestinationId("");
+    setNewPlaylistName("");
   }
+
+  function confirmAddToPlaylist() {
+    if (!pendingAddVideo) return;
+    const name = newPlaylistName.trim();
+    if (name) {
+      const id = pl.createPlaylist(name);
+      pl.addTrack(id, pendingAddVideo);
+    } else {
+      const destination = pl.playlists.find((playlist) => playlist.id === addDestinationId && !isLikedId(playlist.id));
+      if (!destination || destination.items.some((video) => video.id === pendingAddVideo.id)) return;
+      pl.addTrack(destination.id, pendingAddVideo);
+    }
+    setPendingAddVideo(null);
+  }
+
+  const selectedAddDestination = pl.playlists.find((playlist) => playlist.id === addDestinationId);
+  const addDestinationHasVideo = !!pendingAddVideo && !!selectedAddDestination?.items.some((video) => video.id === pendingAddVideo.id);
 
   // ---------- วิธีเล่นต่อเนื่อง ----------
   function startSession(sourceId: string, videoId: string) {
@@ -307,8 +325,6 @@ export default function Page() {
     play(next, source.id, false, "replace");
   }, [mode, source?.id, current?.id, analysisRevision]);
 
-  const addedIds = new Set(target?.items.map((v) => v.id) ?? []);
-
   return (
     <main>
       <h1>
@@ -321,14 +337,7 @@ export default function Page() {
         <section>
           <h2>{current.title}</h2>
           <p>
-            <button
-              type="button"
-              onClick={() => addToPlaylist(current)}
-              disabled={!target || addedIds.has(current.id)}
-              title={!target ? "เลือก playlist ก่อน" : undefined}
-            >
-              {!target ? "เลือก playlist ก่อน" : addedIds.has(current.id) ? "✓ อยู่ใน playlist แล้ว" : "+ playlist"}
-            </button>{" "}
+            <button type="button" onClick={() => addToPlaylist(current)}>+ playlist</button>{" "}
             <HeartButton liked={pl.likedIds.has(current.id)} onClick={() => pl.toggleLike(current)} />
             {source && (
               <>
@@ -407,11 +416,40 @@ export default function Page() {
         activeId={current?.id}
         onSelect={(video) => play(video, null)}
         onAdd={addToPlaylist}
-        addedIds={addedIds}
-        targetName={target?.name}
         likedIds={pl.likedIds}
         onToggleLike={pl.toggleLike}
       />
+
+      {pendingAddVideo && (
+        <div
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingAddVideo(null); }}
+          style={{ position: "fixed", inset: 0, zIndex: 1000, display: "grid", placeItems: "center", padding: "1rem", background: "rgb(0 0 0 / 0.55)" }}
+        >
+          <section role="dialog" aria-modal="true" aria-labelledby="add-playlist-title" style={{ width: "min(28rem, 100%)", display: "grid", gap: "0.8rem", padding: "1.25rem", borderRadius: "0.75rem", background: "white", color: "#171717", boxShadow: "0 12px 40px rgb(0 0 0 / 0.35)" }}>
+            <h2 id="add-playlist-title" style={{ margin: 0 }}>เลือก playlist ปลายทาง</h2>
+            <p style={{ margin: 0 }}>{pendingAddVideo.title}</p>
+            <label style={{ display: "grid", gap: "0.35rem" }}>
+              เลือก playlist ที่มีอยู่
+              <select value={addDestinationId} onChange={(event) => { setAddDestinationId(event.target.value); setNewPlaylistName(""); }}>
+                <option value="">เลือก playlist</option>
+                {pl.playlists.filter((playlist) => !isLikedId(playlist.id)).map((playlist) => (
+                  <option key={playlist.id} value={playlist.id}>{playlist.name}</option>
+                ))}
+              </select>
+            </label>
+            {addDestinationHasVideo && <small role="status">คลิปนี้อยู่ใน playlist นี้แล้ว</small>}
+            <label style={{ display: "grid", gap: "0.35rem" }}>
+              หรือสร้าง playlist ใหม่
+              <input value={newPlaylistName} onChange={(event) => { setNewPlaylistName(event.target.value); if (event.target.value) setAddDestinationId(""); }} placeholder="ชื่อ playlist ใหม่" />
+            </label>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
+              <button type="button" onClick={() => setPendingAddVideo(null)}>ยกเลิก</button>
+              <button type="button" onClick={confirmAddToPlaylist} disabled={!newPlaylistName.trim() && (!addDestinationId || addDestinationHasVideo)}>เพิ่มคลิป</button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }

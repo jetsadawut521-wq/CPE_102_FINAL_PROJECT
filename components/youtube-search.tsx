@@ -11,10 +11,6 @@ interface Props {
   onSelect: (video: VideoItem) => void;
   /** กดปุ่ม “+ playlist” ที่ผลลัพธ์ */
   onAdd?: (video: VideoItem) => void;
-  /** id คลิปที่อยู่ใน playlist ปลายทางแล้ว (ใช้ปิดปุ่มกันเพิ่มซ้ำ) */
-  addedIds?: Set<string>;
-  /** ชื่อ playlist ปลายทาง ถ้ายังไม่มีจะสร้างใหม่ให้ตอนกดเพิ่ม */
-  targetName?: string;
   /** id คลิปที่กดหัวใจไว้แล้ว */
   likedIds?: Set<string>;
   /** กดหัวใจที่ผลลัพธ์ (เข้า/ออกจาก playlist “ถูกใจ”) */
@@ -27,7 +23,7 @@ const MODES: { value: SearchMode; label: string }[] = [
   { value: "tutorial", label: "สอนเต้น" },
 ];
 
-export default function YouTubeSearch({ activeId, onSelect, onAdd, addedIds, targetName, likedIds, onToggleLike }: Props) {
+export default function YouTubeSearch({ activeId, onSelect, onAdd, likedIds, onToggleLike }: Props) {
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<SearchMode>("all");
   const [results, setResults] = useState<VideoItem[] | null>(null);
@@ -105,7 +101,7 @@ export default function YouTubeSearch({ activeId, onSelect, onAdd, addedIds, tar
 
       {onAdd && results && results.length > 0 && (
         <p>
-          <small>{targetName ? `ปุ่ม “+ playlist” จะเพิ่มเข้า: “${targetName}”` : "เลือก/เปิด playlist ที่ต้องการก่อน จึงจะเพิ่มคลิปได้"}</small>
+          <small>กด “+ playlist” แล้วเลือกปลายทางที่จะเพิ่มคลิปได้</small>
         </p>
       )}
 
@@ -137,14 +133,8 @@ export default function YouTubeSearch({ activeId, onSelect, onAdd, addedIds, tar
             </button>
             {onToggleLike && <HeartButton liked={likedIds?.has(v.id) ?? false} onClick={() => onToggleLike(v)} />}
             {onAdd && (
-              <button
-                type="button"
-                onClick={() => onAdd(v)}
-                disabled={!targetName || addedIds?.has(v.id)}
-                title={!targetName ? "เลือก playlist ก่อน" : undefined}
-                style={{ whiteSpace: "nowrap" }}
-              >
-                {!targetName ? "เลือก playlist ก่อน" : addedIds?.has(v.id) ? "✓ เพิ่มแล้ว" : "+ playlist"}
+              <button type="button" onClick={() => onAdd(v)} style={{ whiteSpace: "nowrap" }}>
+                + playlist
               </button>
             )}
           </li>
