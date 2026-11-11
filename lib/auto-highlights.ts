@@ -75,6 +75,15 @@ export function useAutoHighlights(videoId: string | undefined): {
   // Independent background analysis: playback never waits for the worker.
   useEffect(() => {
     if (!videoId) return;
+    // Reuse saved results on revisits, but a saved dance break is not a
+    // substitute for the song hook. Let audio analysis fill in the hook when
+    // the saved set contains only dance-break segments.
+    const saved = readSavedHighlights(videoId);
+    const savedHasHook = saved?.some(segment => segment.kind !== "dance-break") ?? false;
+    if (saved !== null && savedHasHook) {
+      setAudio({ id: videoId, segments: [], pending: false, status: "saved" });
+      return;
+    }
     const ac = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const started = Date.now();
