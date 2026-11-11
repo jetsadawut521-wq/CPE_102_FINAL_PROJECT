@@ -356,7 +356,7 @@ export default function Page() {
                   ถัดไป ⏭
                 </button>{" "}
                 <small>
-                  กำลังเล่นจาก “{source.name}” · {MODE_LABEL[mode]}
+                  กำลังเล่นจาก “{source.name}” · {mode === "random-dance" ? <strong className="pl-random-mode-badge">🔀 Random Dance เปิดอยู่</strong> : MODE_LABEL[mode]}
                 </small>
               </>
             )}
@@ -397,6 +397,7 @@ export default function Page() {
         onToggleLike={pl.toggleLike}
         mode={mode}
         onModeChange={changeMode}
+        onExitPlaylist={() => { if (mode === "random-dance") changeMode("sequential"); }}
         onPlayAll={playAll}
         onSelect={setSelectedId}
         onCreate={(name) => setSelectedId(pl.createPlaylist(name))}

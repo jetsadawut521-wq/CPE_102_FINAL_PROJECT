@@ -22,6 +22,7 @@ interface Props {
   onToggleLike: (video: VideoItem) => void;
   mode: PlayMode;
   onModeChange: (mode: PlayMode) => void;
+  onExitPlaylist: () => void;
   onSelect: (id: string) => void;
   onCreate: (name: string) => void;
   onRename: (id: string, name: string) => void;
@@ -125,6 +126,7 @@ export default function PlaylistPanel({
   onToggleLike,
   mode,
   onModeChange,
+  onExitPlaylist,
   onSelect,
   onCreate,
   onRename,
@@ -156,7 +158,14 @@ export default function PlaylistPanel({
     const totalSec = detail.items.reduce((sum, v) => sum + v.durationSec, 0);
     return (
       <section>
-        <button type="button" className="pl-back" onClick={() => setOpen(false)}>
+        <button
+          type="button"
+          className="pl-back"
+          onClick={() => {
+            setOpen(false);
+            onExitPlaylist();
+          }}
+        >
           ← Playlist ทั้งหมด
         </button>
 
@@ -172,6 +181,7 @@ export default function PlaylistPanel({
         </div>
 
         <div className="pl-actions">
+          {mode === "random-dance" && <strong className="pl-random-mode-badge" role="status">🔀 กำลังอยู่ในโหมด Random Dance</strong>}
           <button
             type="button"
             className="pl-play-all"
@@ -232,6 +242,7 @@ export default function PlaylistPanel({
                   if (window.confirm(`ลบ playlist “${detail.name}” ?`)) {
                     onDelete(detail.id);
                     setOpen(false);
+                    onExitPlaylist();
                   }
                 }}
               >
