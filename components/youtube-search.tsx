@@ -105,7 +105,7 @@ export default function YouTubeSearch({ activeId, onSelect, onAdd, addedIds, tar
 
       {onAdd && results && results.length > 0 && (
         <p>
-          <small>ปุ่ม “+ playlist” จะเพิ่มเข้า: {targetName ? `“${targetName}”` : "playlist ใหม่ (สร้างให้อัตโนมัติ)"}</small>
+          <small>{targetName ? `ปุ่ม “+ playlist” จะเพิ่มเข้า: “${targetName}”` : "เลือก/เปิด playlist ที่ต้องการก่อน จึงจะเพิ่มคลิปได้"}</small>
         </p>
       )}
 
@@ -137,8 +137,14 @@ export default function YouTubeSearch({ activeId, onSelect, onAdd, addedIds, tar
             </button>
             {onToggleLike && <HeartButton liked={likedIds?.has(v.id) ?? false} onClick={() => onToggleLike(v)} />}
             {onAdd && (
-              <button type="button" onClick={() => onAdd(v)} disabled={addedIds?.has(v.id)} style={{ whiteSpace: "nowrap" }}>
-                {addedIds?.has(v.id) ? "✓ เพิ่มแล้ว" : "+ playlist"}
+              <button
+                type="button"
+                onClick={() => onAdd(v)}
+                disabled={!targetName || addedIds?.has(v.id)}
+                title={!targetName ? "เลือก playlist ก่อน" : undefined}
+                style={{ whiteSpace: "nowrap" }}
+              >
+                {!targetName ? "เลือก playlist ก่อน" : addedIds?.has(v.id) ? "✓ เพิ่มแล้ว" : "+ playlist"}
               </button>
             )}
           </li>

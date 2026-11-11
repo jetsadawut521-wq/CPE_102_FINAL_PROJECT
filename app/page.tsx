@@ -112,12 +112,10 @@ export default function Page() {
     return () => window.removeEventListener("popstate", onPop);
   }, [recordVisit]);
 
-  // ถ้า id ที่จำไว้ถูกลบไปแล้ว จะตกมาที่ playlist แรก/null เองโดยไม่ต้อง sync state
-  // ค่าเริ่มต้นเป็น playlist ของผู้ใช้อันแรก (ไม่ใช่ “ถูกใจ”) ถ้ายังไม่มีเลยจึงตกมาที่ “ถูกใจ”
-  const firstUserPlaylist = pl.playlists.find((p) => !isLikedId(p.id)) ?? null;
-  const selected = pl.playlists.find((p) => p.id === selectedId) ?? firstUserPlaylist ?? pl.playlists[0] ?? null;
-  // ปลายทางของปุ่ม “+ playlist”: playlist ที่เลือกอยู่ ยกเว้น “ถูกใจ” (อันนั้นใช้ปุ่มหัวใจ) → ใช้ playlist ของผู้ใช้อันแรกแทน
-  const target = selected && !isLikedId(selected.id) ? selected : firstUserPlaylist;
+  // ใช้เฉพาะ playlist ที่ผู้ใช้เลือก/เปิดเองเป็นปลายทาง ห้ามเดาเป็น playlist แรก
+  const selected = pl.playlists.find((p) => p.id === selectedId) ?? null;
+  // “ถูกใจ” มีปุ่มหัวใจแยก จึงไม่ใช่ปลายทางของปุ่ม “+ playlist”
+  const target = selected && !isLikedId(selected.id) ? selected : null;
   const source = pl.playlists.find((p) => p.id === sourceId) ?? null;
 
   // กดชื่อเว็บ: กลับหน้าหลัก หยุดเล่น ล้างผลค้นหา และกลับไปหน้ารายการ playlist (playlist และโหมดที่เลือกไว้ยังอยู่)
@@ -143,12 +141,10 @@ export default function Page() {
     if (scroll) window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  // เพิ่มคลิปเข้า playlist ปลายทาง ถ้ายังไม่มี playlist ของผู้ใช้เลยจะสร้างให้อัตโนมัติ
+  // เพิ่มคลิปได้เมื่อผู้ใช้เลือก playlist ปลายทางไว้อย่างชัดเจนแล้วเท่านั้น
   function addToPlaylist(video: VideoItem) {
-    let id = target?.id;
-    if (!id) id = pl.createPlaylist(`Playlist ${pl.playlists.length}`);
-    setSelectedId(id);
-    pl.addTrack(id, video);
+    if (!target) return;
+    pl.addTrack(target.id, video);
   }
 
   // ---------- วิธีเล่นต่อเนื่อง ----------
@@ -325,8 +321,13 @@ export default function Page() {
         <section>
           <h2>{current.title}</h2>
           <p>
-            <button type="button" onClick={() => addToPlaylist(current)} disabled={addedIds.has(current.id)}>
-              {addedIds.has(current.id) ? "✓ อยู่ใน playlist แล้ว" : "+ playlist"}
+            <button
+              type="button"
+              onClick={() => addToPlaylist(current)}
+              disabled={!target || addedIds.has(current.id)}
+              title={!target ? "เลือก playlist ก่อน" : undefined}
+            >
+              {!target ? "เลือก playlist ก่อน" : addedIds.has(current.id) ? "✓ อยู่ใน playlist แล้ว" : "+ playlist"}
             </button>{" "}
             <HeartButton liked={pl.likedIds.has(current.id)} onClick={() => pl.toggleLike(current)} />
             {source && (
