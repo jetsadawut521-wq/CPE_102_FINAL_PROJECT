@@ -164,6 +164,13 @@ export default function Page() {
 
   const selectedAddDestination = pl.playlists.find((playlist) => playlist.id === addDestinationId);
   const addDestinationHasVideo = !!pendingAddVideo && !!selectedAddDestination?.items.some((video) => video.id === pendingAddVideo.id);
+  const userPlaylists = pl.playlists.filter((playlist) => !isLikedId(playlist.id));
+  const addablePlaylists = pendingAddVideo
+    ? userPlaylists.filter((playlist) => !playlist.items.some((video) => video.id === pendingAddVideo.id))
+    : userPlaylists;
+  const playlistsAlreadyContainingVideo = pendingAddVideo
+    ? userPlaylists.filter((playlist) => playlist.items.some((video) => video.id === pendingAddVideo.id))
+    : [];
 
   // ---------- วิธีเล่นต่อเนื่อง ----------
   function startSession(sourceId: string, videoId: string) {
@@ -433,8 +440,13 @@ export default function Page() {
               เลือก playlist ที่มีอยู่
               <select value={addDestinationId} onChange={(event) => { setAddDestinationId(event.target.value); setNewPlaylistName(""); }}>
                 <option value="">เลือก playlist</option>
-                {pl.playlists.filter((playlist) => !isLikedId(playlist.id)).map((playlist) => (
+                {addablePlaylists.map((playlist) => (
                   <option key={playlist.id} value={playlist.id}>{playlist.name}</option>
+                ))}
+                {playlistsAlreadyContainingVideo.map((playlist) => (
+                  <option key={playlist.id} value={playlist.id} disabled style={{ color: "#999" }}>
+                    {playlist.name} — อยู่ในเพลย์ลิสต์แล้ว
+                  </option>
                 ))}
               </select>
             </label>
