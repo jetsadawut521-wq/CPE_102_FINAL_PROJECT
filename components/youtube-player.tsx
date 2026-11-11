@@ -90,6 +90,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const focusRangeRef = useRef(focusRange);
   const focusEndHandledRef = useRef(false);
   const loadedFocusKeyRef = useRef("");
+  const countdownAudioRef = useRef<AudioContext | null>(null);
   const rateRef = useRef(1);
   const qualityRef = useRef("auto");
   const pauseAfterLoadRef = useRef(false); // เปลี่ยนความละเอียดตอนหยุดอยู่ → โหลดใหม่แล้วหยุดต่อ
@@ -105,6 +106,40 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const [duration, setDuration] = useState(0);
   const [focusCountdown, setFocusCountdown] = useState<number | null>(null);
   const [seeking, setSeeking] = useState(false);
+
+  // Beep once whenever the visible Random Dance countdown changes (3, 2, 1).
+  useEffect(() => {
+    if (focusCountdown === null) return;
+    let cancelled = false;
+
+    const playCountdownBeep = async () => {
+      try {
+        const context = countdownAudioRef.current ?? new AudioContext();
+        countdownAudioRef.current = context;
+        if (context.state === "suspended") await context.resume();
+        if (cancelled) return;
+
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        const now = context.currentTime;
+        const pitch = focusCountdown === 1 ? 1046 : focusCountdown === 2 ? 880 : 740;
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(pitch, now);
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(0.18, now + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+        oscillator.start(now);
+        oscillator.stop(now + 0.21);
+      } catch {
+        // Browser audio policy may block the synthesized beep; playback continues normally.
+      }
+    };
+
+    void playCountdownBeep();
+    return () => { cancelled = true; };
+  }, [focusCountdown]);
   const [volume, setVolume] = useState(DEFAULT_VOLUME);
   const [mirrored, setMirrored] = useState(false);
   const [flash, setFlash] = useState<FlashState | null>(null);
