@@ -18,6 +18,7 @@ interface Props {
   onError?: (code: number) => void; // รหัส error จาก YouTube (เช่น 101/150 = ฝังไม่ได้)
   loopOne?: boolean; // เล่นคลิปนี้ซ้ำไปเรื่อย ๆ: จบแล้วเริ่มใหม่เองและไม่เรียก onEnded
   highlights?: AutoSegment[]; // ท่อนยอดนิยมที่ระบบวิเคราะห์ให้ แสดงบนแถบกรอ (ว่าง = ไม่แสดง)
+  onHighlightsChange?: (segments: AutoSegment[]) => void;
   focusRange?: { start: number; end: number; key: string };
   onFocusRangeEnd?: () => void;
 }
@@ -70,7 +71,7 @@ type StageCorner = SavedStageCorner;
 const FORMATION_COLORS = ["#ffe600", "#ff5b9a", "#4de1ff", "#a78bfa", "#ff9f43", "#68e39a", "#ff6b6b", "#5eead4", "#c084fc", "#facc15"];
 
 export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onError, loopOne = false, highlights = NO_HIGHLIGHTS,
-  focusRange, onFocusRangeEnd }: Props) {
+  onHighlightsChange, focusRange, onFocusRangeEnd }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YTPlayer | null>(null);
@@ -1133,9 +1134,95 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
           </div>
         )}
 
+        <HighlightEditor
+          key={`highlight-editor-${videoId}`}
+          highlights={highlights}
+          duration={duration}
+          currentTime={time}
+          onSave={onHighlightsChange}
+        />
+
         {/* ปกติแสดงเป็นแถวใต้จอ แต่ตอนเต็มจอจะไปอยู่ในเมนูจุดสามจุดแทน */}
         {!isFullscreen && <div className="yp-row">{settings}</div>}
       </div>
+    </div>
+  );
+}
+
+function HighlightEditor({ highlights, duration, currentTime, onSave }: {
+  highlights: AutoSegment[];
+  duration: number;
+  currentTime: number;
+  onSave?: (segments: AutoSegment[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<AutoSegment[]>([]);
+  const [saved, setSaved] = useState(false);
+  const valid = draft.every(segment => Number.isFinite(segment.start) && Number.isFinite(segment.end) &&
+    segment.start >= 0 && segment.end > segment.start && (!duration || segment.end <= duration));
+
+  function beginEditing() {
+    setDraft(highlights.map(segment => ({ ...segment })));
+    setSaved(false);
+    setOpen(true);
+  }
+
+  function update(index: number, changes: Partial<AutoSegment>) {
+    setDraft(items => items.map((item, i) => i === index ? { ...item, ...changes } : item));
+    setSaved(false);
+  }
+
+  function addSegment() {
+    if (!duration) return;
+    const start = Math.min(currentTime, Math.max(0, duration - 1));
+    const end = Math.min(duration, start + 10);
+    setDraft(items => [...items, { origin: "manual", kind: "chorus", start, end, label: "ท่อนที่เพิ่มเอง",
+      confidence: "medium", evidence: "เพิ่มโดยผู้ใช้" }]);
+    setSaved(false);
+  }
+
+  function save() {
+    if (!valid || !onSave) return;
+    onSave(draft.map(segment => ({ ...segment })).sort((a, b) => a.start - b.start));
+    setOpen(false);
+    setSaved(true);
+  }
+
+  return (
+    <div className="yp-highlight-editor">
+      {!open ? (
+        <>
+          <button type="button" onClick={beginEditing}>แก้ไขไฮไลท์</button>
+          {saved && <small role="status">บันทึกไฮไลท์แล้ว</small>}
+        </>
+      ) : (
+        <div className="yp-highlight-editor__panel">
+          <strong>แก้ไขท่อนไฮไลท์</strong>
+          {draft.length === 0 && <small>ยังไม่มีท่อนไฮไลท์ กด “เพิ่มท่อน” เพื่อสร้างเอง</small>}
+          {draft.map((segment, index) => (
+            <div className="yp-highlight-editor__row" key={`${index}-${segment.start}`}>
+              <label>ชื่อ
+                <input value={segment.label} onChange={event => update(index, { label: event.target.value })} />
+              </label>
+              <label>เริ่ม (วินาที)
+                <input type="number" min={0} max={duration || undefined} step={0.1} value={Number.isFinite(segment.start) ? segment.start : ""}
+                  onChange={event => update(index, { start: event.target.value === "" ? Number.NaN : Number(event.target.value) })} />
+              </label>
+              <label>จบ (วินาที)
+                <input type="number" min={0} max={duration || undefined} step={0.1} value={Number.isFinite(segment.end) ? segment.end : ""}
+                  onChange={event => update(index, { end: event.target.value === "" ? Number.NaN : Number(event.target.value) })} />
+              </label>
+              <button type="button" onClick={() => setDraft(items => items.filter((_, i) => i !== index))}>ลบท่อน</button>
+            </div>
+          ))}
+          <div className="yp-highlight-editor__actions">
+            <button type="button" onClick={addSegment} disabled={!duration}>เพิ่มท่อน ณ เวลาปัจจุบัน</button>
+            <button type="button" onClick={() => setOpen(false)}>ยกเลิก</button>
+            <button type="button" onClick={save} disabled={!valid}>บันทึกการแก้ไข</button>
+            {!valid && <small role="alert">ตรวจเวลาเริ่มและเวลาจบ: ต้องไม่ติดลบ เวลาจบต้องมากกว่าเวลาเริ่มและไม่เกินความยาวคลิป</small>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

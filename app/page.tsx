@@ -368,6 +368,7 @@ export default function Page() {
             onFocusRangeEnd={() => step(1, false)}
             loopOne={!!source && mode === "single"}
             highlights={auto.segments}
+            onHighlightsChange={auto.saveEdits}
           />
           {["queued", "busy"].includes(auto.audioStatus ?? "") && <p><small>กำลังรอคิววิเคราะห์เสียง สามารถเล่นคลิปต่อได้…</small></p>}
           {auto.audioStatus === "downloading" && <p><small>กำลังเตรียมเสียงของคลิปนี้…</small></p>}
