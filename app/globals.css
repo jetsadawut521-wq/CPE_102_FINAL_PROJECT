@@ -147,3 +147,172 @@ a { color: inherit; }
   .muverse-app .pl-row-actions { grid-column: 1 / -1; }
   .site-footer { padding-top: 18px; }
 }
+
+/* Xpo / MUVERSE V2 visual system: warm paper, punchy type, lime controls. */
+:root { --ink:#111111; --muted:#74736d; --paper:#f7f6f2; --surface:#efefeb; --line:#deded8; --lime:#d0ff31; --purple:#b99aff; --orange:#ff8c3b; --navy:#171d2d; }
+body { background:var(--paper); color:var(--ink); font-family:"Manrope","DM Sans",system-ui,sans-serif; }
+.muverse-app { width:min(1296px,calc(100% - 64px)); padding:0 0 118px; }
+.site-header { position:relative; min-height:86px; border:0; gap:clamp(28px,6vw,90px); }
+.brand { flex:none; gap:0; font-size:24px; letter-spacing:-.08em; font-weight:900; }
+.brand-spark { margin-left:2px; font-size:25px; }
+.header-search { flex:1; min-width:0; }
+.header-search > section { position:relative; }
+.header-search form { display:flex; align-items:center; padding:0 17px 0 25px; height:50px; border-radius:999px; background:#eeefea; }
+.header-search form input { width:100%!important; height:100%; border:0!important; outline:0; padding:0!important; background:transparent!important; font-size:14px!important; }
+.header-search form input::placeholder { color:#77766f; }
+.header-search form button { width:34px; height:34px; padding:0!important; border:0!important; border-radius:50%!important; background:transparent!important; font-size:0!important; }
+.header-search form button::after { content:"⌕"; font-size:27px; line-height:1; }
+.header-search fieldset { display:none; }
+.header-search ul { position:absolute; z-index:30; top:55px; left:0; right:0; max-height:65vh; overflow:auto; margin:0!important; padding:10px!important; border:1px solid var(--line); border-radius:18px; background:#fff; box-shadow:0 18px 50px #16161618; }
+.header-search li { padding:8px!important; }
+.header-search li > button:first-child { border-radius:10px!important; }
+.welcome-panel { min-height:420px; margin:34px 0 48px; padding:36px 0; grid-template-columns:1fr 1fr; gap:48px; color:var(--ink); background:transparent; border-radius:0; }
+.welcome-panel::before { display:none; }
+.welcome-copy { max-width:690px; }
+.eyebrow { color:#74736d; font-size:12px; letter-spacing:.04em; font-weight:800; }
+.welcome-copy h1 { margin:22px 0 18px; font-family:Manrope,"DM Sans",sans-serif; font-size:clamp(56px,7vw,94px); line-height:.92; letter-spacing:-.075em; font-weight:900; }
+.welcome-panel .eyebrow { color:#66655f; }
+.welcome-copy p { color:#686761; margin:0 0 30px; font-size:17px; }
+.welcome-actions { display:flex; gap:12px; flex-wrap:wrap; }
+.muverse-app .welcome-cta, .muverse-app .welcome-secondary { min-height:54px; padding:0 25px; border:0!important; border-radius:999px!important; background:var(--lime)!important; color:#111!important; font-size:14px!important; font-weight:800; }
+.muverse-app .welcome-cta span { margin-left:22px; font-size:19px; }
+.muverse-app .welcome-secondary { background:#eeefea!important; }
+.welcome-art { min-height:360px; position:relative; overflow:hidden; border-radius:30px; background:#d8d7d0; }
+.welcome-art img { width:100%; height:100%; position:absolute; inset:0; object-fit:cover; }
+.welcome-art::after { content:""; position:absolute; inset:45% 0 0; background:linear-gradient(transparent,#1118); }
+.hero-play { position:absolute; z-index:1; left:50%; top:50%; display:grid; place-items:center; width:66px; height:66px; border-radius:50%; background:var(--lime); color:#111; transform:translate(-50%,-50%); }
+.hero-stamp { position:absolute; z-index:1; right:20px; top:20px; padding:15px 18px; border-radius:50%; background:var(--purple); font-size:17px; line-height:1.05; font-weight:900; transform:rotate(9deg); }
+.hero-open { position:absolute; z-index:2; bottom:20px; left:22px; padding:11px 17px!important; border:0!important; border-radius:999px!important; color:#111!important; background:#fff!important; font-weight:800; }
+.ticker { width:100vw; margin:0 calc((1296px - 100vw)/2) 48px; overflow:hidden; padding:19px 0; background:#101010; color:var(--lime); white-space:nowrap; font-size:17px; font-weight:900; letter-spacing:.04em; }
+.ticker span { display:block; width:max-content; padding-left:3vw; }
+.home-collections { margin:0 0 44px; }
+.section-heading { margin-bottom:24px; }
+.section-heading h2 { font-size:32px; letter-spacing:-.055em; font-weight:900; }
+.text-action { border:0!important; background:transparent!important; font-weight:800!important; }
+.home-cards { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:18px; }
+.home-video-card,.home-playlist-card { position:relative; display:flex; flex-direction:column; align-items:flex-start; min-width:0; min-height:245px; overflow:hidden; padding:0!important; border:0!important; border-radius:22px!important; background:#fff!important; text-align:left; }
+.home-video-card img { width:100%; height:170px; object-fit:cover; }
+.home-video-card span,.home-video-card small { padding:0 15px; }
+.home-video-card span { padding-top:12px; font-weight:900; }
+.home-video-card small { padding-top:4px; padding-bottom:12px; color:var(--muted); }
+.home-video-card i { position:absolute; right:14px; top:135px; display:grid; place-items:center; width:40px; height:40px; border-radius:50%; background:var(--lime); font-style:normal; }
+.home-playlist-card { justify-content:flex-end; padding:24px!important; background:var(--lime)!important; }
+.home-playlist-card > span { font-size:28px; margin-bottom:auto; }
+.home-playlist-card strong { font-size:22px; }
+.home-playlist-card small { font-size:13px; }
+.home-playlist-card.tone-1 { background:var(--purple)!important; }
+.current-video,.content-section { margin:24px 0 44px; padding:0; border:0; border-radius:0; background:transparent; box-shadow:none; }
+.current-video .section-heading h2 { font-size:clamp(30px,4vw,48px); }
+.current-video > p { margin:10px 0 18px; }
+.practice-layout { display:grid; grid-template-columns:minmax(0,1fr) 320px; gap:26px; align-items:start; }
+.player-column { min-width:0; }
+.up-next-card { display:grid; gap:15px; min-height:300px; padding:26px; border-radius:25px; background:#efefeb; }
+.up-next-card h3 { margin:2px 0; font-size:27px; }
+.up-next-card p { color:var(--muted); }
+.up-next-card button { min-height:48px; border:0!important; border-radius:999px!important; background:#fff!important; font-weight:800; }
+.up-next-card .end-session { margin-top:auto; background:var(--lime)!important; }
+.content-section { padding:0; }
+.playlist-section .section-heading { align-items:end; }
+.playlist-section .pl-create { margin:0 0 26px; }
+.playlist-section .pl-lib { grid-template-columns:repeat(3,minmax(0,1fr)); gap:22px; }
+.playlist-section .pl-lib > li { min-width:0; }
+.playlist-section .pl-lib-row { display:grid; grid-template-columns:1fr; align-content:start; gap:0; height:100%; min-height:320px; padding:0!important; overflow:hidden; border:0!important; border-radius:22px!important; background:#d0ff31!important; }
+.playlist-section .pl-cover { width:100%!important; height:218px!important; border-radius:0!important; }
+.playlist-section .pl-cover--liked { background:var(--purple)!important; }
+.playlist-section .pl-lib-row > span:last-child { display:block; padding:16px 20px 19px; }
+.playlist-section .pl-lib-name { font-size:22px; font-weight:900; }
+.playlist-section .pl-lib-sub { color:#333; opacity:1; }
+.playlist-section .pl-lib > li:nth-child(3n) .pl-lib-row { background:#ff8c3b!important; }
+.playlist-section .pl-lib > li:nth-child(3n + 2) .pl-lib-row { background:var(--lime)!important; }
+.playlist-section .pl-back { margin:0 0 22px; }
+.playlist-section:has(.pl-tracks) .pl-head { padding:16px 0 22px; }
+.playlist-section:has(.pl-tracks) .pl-head-info h3 { font-size:44px; }
+.playlist-section .pl-row { grid-template-columns:28px 96px minmax(0,1fr) auto; min-height:78px; }
+.playlist-section .pl-row.is-playing { background:#dbf5c5; }
+.discover-section { max-width:960px; margin:0 auto; padding:30px; border-radius:25px; background:#fff; }
+.empty-practice { color:var(--muted); }
+.random-empty { margin:80px auto; max-width:650px; padding:60px; border-radius:28px; background:#efefeb; text-align:center; }
+.random-empty h2 { font-size:44px; }
+.random-empty .welcome-cta { margin-top:14px; }
+.history-section { padding:24px; border-radius:24px; background:#efefeb; }
+.bottom-nav { position:fixed; z-index:900; left:50%; bottom:18px; display:flex; align-items:center; gap:5px; padding:6px; border:1px solid #e5e5df; border-radius:999px; background:#fff; box-shadow:0 12px 50px #1616161c; transform:translateX(-50%); }
+.bottom-nav button { display:grid; justify-items:center; align-content:center; gap:2px; min-width:92px; height:54px; padding:5px 12px!important; border:0!important; border-radius:999px!important; background:transparent!important; color:#151515!important; }
+.bottom-nav button > span { font-size:19px; line-height:1; }
+.bottom-nav button small { font-size:11px; font-weight:700; }
+.bottom-nav button.active { background:var(--lime)!important; }
+.site-footer { display:none; }
+.random-status { padding:13px 17px; border-radius:14px; background:#eff0eb; }
+.muverse-app .yp-view-layout.has-formation { grid-template-columns:minmax(0,1.8fr) minmax(260px,.9fr); }
+.muverse-app .yp-formation-map { background:#efefeb; color:#111; border:0; border-radius:24px; }
+.muverse-app .yp-formation-map__stage { border-color:#d8d8d0; background-color:#e4e4dd; }
+.muverse-app .yp-formation-tools button { border-radius:999px!important; background:var(--lime)!important; border:0!important; color:#111!important; }
+.muverse-app .yp-controls input[type=range] { accent-color:#111; }
+.muverse-app .yp-highlight-editor__panel { border-radius:22px; background:#efefeb; }
+.add-playlist-dialog { border-radius:28px; }
+@media(max-width:900px) { .home-cards { grid-template-columns:repeat(2,minmax(0,1fr)); } .practice-layout { grid-template-columns:1fr; } .up-next-card { min-height:0; } .ticker { margin-left:-32px; } }
+@media(max-width:620px) { .muverse-app { width:calc(100% - 28px); padding-bottom:104px; } .site-header { gap:14px; min-height:76px; } .brand { font-size:17px; } .welcome-panel { grid-template-columns:1fr; gap:24px; min-height:0; margin:18px 0 30px; padding:20px 0; } .welcome-copy h1 { font-size:56px; } .welcome-art { min-height:230px; } .ticker { margin:0 -14px 34px; width:100vw; font-size:14px; } .home-cards { grid-template-columns:1fr 1fr; gap:10px; } .home-video-card,.home-playlist-card { min-height:190px; } .home-video-card img { height:120px; } .playlist-section .pl-lib { grid-template-columns:1fr 1fr; gap:10px; } .playlist-section .pl-cover { height:135px!important; } .playlist-section .pl-lib-row { min-height:220px; } .playlist-section .pl-lib-name { font-size:17px; } .bottom-nav { bottom:10px; width:calc(100% - 20px); justify-content:space-around; gap:0; } .bottom-nav button { min-width:0; flex:1; padding:5px 3px!important; } .bottom-nav button small { font-size:9px; } .random-empty { margin:30px 0; padding:32px 18px; } }
+
+/* Design-aligned home and navigation refinements. */
+.muverse-app { width:min(1360px,calc(100% - 88px)); }
+.site-header { min-height:96px; gap:clamp(32px,7vw,112px); }
+.brand { font-size:27px; letter-spacing:-.09em; }
+.brand-spark { color:#9d78ea; font-size:28px; }
+.header-search form { height:54px; background:#eeefea; }
+.welcome-panel { min-height:390px; margin:34px 0 50px; grid-template-columns:minmax(0,1.05fr) minmax(340px,.95fr); gap:clamp(34px,6vw,82px); }
+.welcome-copy h1 { max-width:700px; font-size:clamp(60px,7.2vw,96px); line-height:.9; }
+.welcome-copy h1 em { color:#a985ee; font-style:normal; }
+.welcome-copy p { max-width:440px; }
+.welcome-art { min-height:360px; border-radius:28px; background:#dddcd5; }
+.welcome-art img { filter:saturate(.92); }
+.hero-play { width:60px; height:60px; }
+.hero-stamp { background:var(--orange); color:#111; }
+.home-collections { margin:0 0 70px; }
+.home-cards { grid-template-columns:repeat(3,minmax(0,1fr)); gap:22px; }
+.home-playlist-card { min-height:290px; justify-content:flex-end; padding:0!important; background:#fff!important; isolation:isolate; box-shadow:0 7px 28px #171a260d; transition:transform .18s,box-shadow .18s; }
+.home-playlist-card:hover { transform:translateY(-4px); box-shadow:0 16px 36px #171a2618; }
+.home-playlist-card > img { position:absolute; z-index:-1; inset:0 0 72px; width:100%; height:calc(100% - 72px); object-fit:cover; }
+.home-playlist-card::after { content:""; position:absolute; z-index:-1; inset:45% 0 72px; background:linear-gradient(transparent,#1115); }
+.home-playlist-card .playlist-card-caption { width:100%; min-height:76px; display:grid; align-content:center; gap:4px; padding:13px 20px!important; color:var(--ink); background:var(--lime); }
+.home-playlist-card .playlist-card-caption strong { font-size:19px; line-height:1.2; }
+.home-playlist-card .playlist-card-caption small { padding:0; color:#333; font-size:12px; }
+.home-playlist-card i { position:absolute; right:17px; bottom:91px; width:38px; height:38px; display:grid; place-items:center; border-radius:50%; background:var(--lime); font-style:normal; }
+.home-playlist-card.tone-1 .playlist-card-caption,.home-playlist-card.tone-1 i { background:var(--purple); }
+.home-playlist-card.tone-2 .playlist-card-caption,.home-playlist-card.tone-2 i { background:var(--orange); }
+.home-playlist-card .playlist-card-empty { height:218px; display:grid; place-items:center; color:#fff; font-size:80px; background:linear-gradient(135deg,#ab8df0,#d5c8ff); }
+.home-playlist-card:not(:has(> img)) .playlist-card-caption { margin-top:auto; }
+.current-video .section-heading h2 { max-width:850px; }
+.practice-layout { grid-template-columns:minmax(0,1fr) minmax(270px,330px); gap:24px; }
+.up-next-card { background:#ecece6; }
+.bottom-nav { bottom:20px; gap:7px; padding:7px; }
+.bottom-nav button { min-width:102px; height:58px; }
+.bottom-nav button.active { background:var(--lime)!important; }
+.playlist-section .pl-lib { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.muverse-app .yp-formation-map { background:#efefeb; }
+
+@media(max-width:900px) {
+  .muverse-app { width:calc(100% - 48px); }
+  .home-cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .welcome-panel { grid-template-columns:1fr  .85fr; gap:28px; }
+  .welcome-art { min-height:300px; }
+  .practice-layout { grid-template-columns:minmax(0,1fr) 270px; gap:16px; }
+  .bottom-nav button { min-width:88px; }
+}
+@media(max-width:620px) {
+  .muverse-app { width:calc(100% - 28px); padding-bottom:104px; }
+  .site-header { min-height:76px; gap:14px; }
+  .brand { font-size:17px; }
+  .brand-spark { font-size:19px; }
+  .header-search form { height:44px; padding-left:15px; }
+  .welcome-panel { grid-template-columns:1fr; gap:22px; min-height:0; margin:20px 0 34px; padding:18px 0; }
+  .welcome-copy h1 { font-size:clamp(52px,14vw,70px); }
+  .welcome-art { min-height:220px; }
+  .home-cards { grid-template-columns:1fr; gap:14px; }
+  .home-playlist-card { min-height:250px; }
+  .home-playlist-card > img { height:calc(100% - 68px); inset:0 0 68px; }
+  .home-playlist-card .playlist-card-caption { min-height:68px; }
+  .practice-layout { grid-template-columns:1fr; }
+  .bottom-nav { bottom:9px; width:calc(100% - 16px); justify-content:space-around; gap:0; }
+  .bottom-nav button { min-width:0; height:54px; flex:1; padding:4px 2px!important; }
+  .bottom-nav button small { font-size:9px; }
+  .playlist-section .pl-lib { grid-template-columns:1fr 1fr; }
+}

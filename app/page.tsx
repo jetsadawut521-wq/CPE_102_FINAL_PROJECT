@@ -61,9 +61,12 @@ interface NavEntry {
   mv: { video: VideoItem | null; sourceId: string | null };
 }
 
+type AppView = "home" | "random" | "practice" | "playlists" | "user";
+
 export default function Page() {
   const pl = usePlaylists();
   const [current, setCurrent] = useState<VideoItem | null>(null);
+  const [activeView, setActiveView] = useState<AppView>("home");
   const visits = useWatchHistory();
   const recordVisit = visits.record;
   const [selectedId, setSelectedId] = useState<string | null>(null); // playlist ที่เปิดดู
@@ -127,6 +130,8 @@ export default function Page() {
     if (current) window.history.pushState({ mv: { video: null, sourceId: null } } satisfies NavEntry, "");
     setCurrent(null);
     setSourceId(null);
+    if (mode === "random-dance") changeMode("sequential");
+    setActiveView("home");
     setHomeKey((k) => k + 1);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -138,6 +143,7 @@ export default function Page() {
     else window.history.replaceState(entry, "");
     setCurrent(video);
     setSourceId(fromPlaylistId);
+    setActiveView(mode === "random-dance" && fromPlaylistId ? "random" : "practice");
     setFocusSerial((value) => value + 1);
     // เครื่องเล่นอยู่ด้านบน เลื่อนขึ้นไปให้เห็นทันทีหลังเลือกคลิป (ตอนเล่นเพลงถัดไปอัตโนมัติไม่เลื่อน)
     if (scroll) window.scrollTo({ top: 0, behavior: "smooth" });
@@ -312,6 +318,14 @@ export default function Page() {
     end: firstHighlight.end + 4,
     key: `${current.id}:${focusSerial}`,
   } : undefined;
+  const heroVideo = current ?? visits.entries[0]?.video ?? pl.playlists.find((playlist) => playlist.items.length)?.items[0] ?? null;
+
+  function navigate(view: AppView) {
+    if (view === "random" && mode !== "random-dance") changeMode("random-dance");
+    if (view !== "random" && mode === "random-dance") changeMode("sequential");
+    setActiveView(view);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   useEffect(() => {
     if (mode !== "random-dance" || !source || !current) return;
@@ -338,30 +352,59 @@ export default function Page() {
     <main className="muverse-app">
       <header className="site-header">
         <Link href="/" className="brand" onClick={goHome} aria-label="Muverse home">
-          <span className="brand-mark" aria-hidden="true">M</span><span>MUVERSE</span>
+          <span>MUVERSE</span><span className="brand-spark" aria-hidden="true">✦</span>
         </Link>
-        <nav className="site-nav" aria-label="หลัก">
-          <a href="#discover">ค้นหา</a><a href="#practice">ฝึกเต้น</a><a href="#playlists">เพลย์ลิสต์</a>
-        </nav>
-        <span className="header-note"><i /> พื้นที่ฝึกของคุณ</span>
+        <div className="header-search">
+          <YouTubeSearch
+            key={`search-${homeKey}`}
+            activeId={current?.id}
+            onSelect={(video) => play(video, null)}
+            onAdd={addToPlaylist}
+            likedIds={pl.likedIds}
+            onToggleLike={pl.toggleLike}
+          />
+        </div>
       </header>
 
-      {!current && <section className="welcome-panel" aria-labelledby="welcome-title">
+      {activeView === "home" && <>
+      <section className="welcome-panel" aria-labelledby="welcome-title">
         <div className="welcome-copy">
-          <span className="eyebrow">YOUR DANCE SPACE</span>
-          <h1 id="welcome-title">Find your<br /><em>next move.</em></h1>
-          <p>ค้นหาคลิปที่อยากฝึก จัดเพลย์ลิสต์ แล้วเปิดเพลงซ้อมได้ในที่เดียว</p>
-          <a className="welcome-cta" href="#discover">เริ่มค้นหาคลิป <span aria-hidden="true">↘</span></a>
+          <span className="eyebrow">YOUR PERSONAL DANCE FLOOR</span>
+          <h1 id="welcome-title">YOUR NEXT<br /><em>MIXTAPE.</em></h1>
+          <p>Pick a clip, build your playlist, and make the floor yours.</p>
+          <div className="welcome-actions">
+            <button className="welcome-cta" type="button" onClick={() => navigate("random")}>Random Dance <span aria-hidden="true">↗</span></button>
+            <button className="welcome-secondary" type="button" onClick={() => navigate("practice")}>Dance Practice <span aria-hidden="true">↗</span></button>
+          </div>
         </div>
-        <div className="welcome-art" aria-hidden="true">
-          <div className="art-ring art-ring-one" /><div className="art-ring art-ring-two" />
-          <span className="art-dot art-dot-one" /><span className="art-dot art-dot-two" /><span className="art-dot art-dot-three" />
-          <span className="art-label">MOVE<br />TOGETHER</span><span className="art-stamp">PLAY<br />YOUR<br />WAY</span>
+        <div className="welcome-art" aria-hidden={!heroVideo}>
+          {heroVideo && <>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={heroVideo.thumbnail} alt="" />
+            <span className="hero-play" aria-hidden="true">▶</span>
+            <span className="hero-stamp">100%<br />YOUR VIBE</span>
+            <button className="hero-open" type="button" onClick={() => play(heroVideo, null)}>Play this clip ↗</button>
+          </>}
         </div>
-      </section>}
+      </section>
+      <section className="home-collections">
+        <div className="section-heading"><div><span className="eyebrow">YOUR COLLECTION</span><h2>MY PLAYLISTS</h2></div><button className="text-action" type="button" onClick={() => navigate("playlists")}>View all ↗</button></div>
+        <div className="home-cards">
+          {pl.playlists.filter((playlist) => playlist.items.length).slice(0, 3).map((playlist, index) => {
+            const cover = playlist.cover ?? playlist.items[0]?.thumbnail;
+            return <button key={playlist.id} className={`home-playlist-card tone-${index}`} type="button" onClick={() => { setSelectedId(playlist.id); navigate("playlists"); }}>
+              {cover && <img src={cover} alt="" />}
+              <span className="playlist-card-caption"><strong>{playlist.name}</strong><small>{playlist.items.length} clips · Open playlist</small></span>
+              <i aria-hidden="true">↗</i>
+            </button>;
+          })}
+          {!pl.playlists.some((playlist) => playlist.items.length) && <button className="home-playlist-card tone-0" type="button" onClick={() => navigate("practice")}><span className="playlist-card-empty">✦</span><span className="playlist-card-caption"><strong>Start your first playlist</strong><small>Search for a dance clip</small></span><i aria-hidden="true">↗</i></button>}
+        </div>
+      </section>
+      </>}
 
-      {current && (
-        <section id="practice" className="current-video">
+      {current && (activeView === "practice" || activeView === "random") && (
+        <section id="practice" className={`current-video ${activeView === "random" ? "random-player" : ""}`}>
           <div className="section-heading"><div><span className="eyebrow">NOW PLAYING</span><h2>{current.title}</h2></div>
             {source && <span className={`play-mode-pill ${mode === "random-dance" ? "is-random" : ""}`}>{mode === "random-dance" ? "↗ RANDOM DANCE" : MODE_LABEL[mode]}</span>}
           </div>
@@ -383,7 +426,8 @@ export default function Page() {
               </>
             )}
           </p>
-          <YouTubePlayer
+          <div className="practice-layout">
+          <div className="player-column"><YouTubePlayer
             videoId={current.id}
             showAnalysisTools={!isTutorial}
             onEnded={() => step(1, false)}
@@ -392,7 +436,9 @@ export default function Page() {
             loopOne={!!source && mode === "single"}
             highlights={auto.segments}
             onHighlightsChange={auto.saveEdits}
-          />
+          /></div>
+          {activeView === "random" && <aside className="up-next-card"><span className="eyebrow">RANDOM DANCE</span><h3>UP NEXT</h3><strong>{source?.items.find((video) => video.id !== current.id)?.title ?? "Next clip"}</strong><p>Next clip starts with a 3 · 2 · 1 cue</p><button type="button" onClick={() => step(1, false)}>Skip</button><button className="end-session" type="button" onClick={() => { changeMode("sequential"); setActiveView("playlists"); }}>End session</button></aside>}
+          </div>
           {!isTutorial && <>
           {["queued", "busy"].includes(auto.audioStatus ?? "") && <p><small>กำลังรอคิววิเคราะห์เสียง สามารถเล่นคลิปต่อได้…</small></p>}
           {auto.audioStatus === "downloading" && <p><small>กำลังเตรียมเสียงของคลิปนี้…</small></p>}
@@ -410,13 +456,13 @@ export default function Page() {
         </section>
       )}
 
-      <section className="content-section history-section">
+      {activeView === "user" && <section className="content-section history-section">
         <WatchHistory entries={visits.entries} loaded={visits.loaded} error={visits.error}
           activeId={current?.id} onPlay={(video) => play(video, null)} onRemove={visits.remove} onClear={visits.clear} />
-      </section>
+      </section>}
 
-      <section id="playlists" className="content-section playlist-section">
-      <div className="section-heading"><div><span className="eyebrow">YOUR COLLECTION</span><h2>เพลย์ลิสต์ของคุณ</h2></div><span className="section-side-note">บันทึกคลิปที่อยากฝึกไว้ที่นี่</span></div>
+      {activeView === "playlists" && <section id="playlists" className="content-section playlist-section">
+      <div className="section-heading"><div><span className="eyebrow">YOUR COLLECTION</span><h2>My Playlists</h2></div><span className="section-side-note">Your playlists. Your rhythm.</span></div>
       <PlaylistPanel
         key={`pl-${homeKey}`}
         playlists={pl.playlists}
@@ -429,7 +475,7 @@ export default function Page() {
         onModeChange={changeMode}
         onExitPlaylist={() => { if (mode === "random-dance") changeMode("sequential"); }}
         onPlayAll={playAll}
-        onSelect={setSelectedId}
+        onSelect={(id) => { setSelectedId(id); setActiveView("playlists"); }}
         onCreate={(name) => setSelectedId(pl.createPlaylist(name))}
         onRename={pl.renamePlaylist}
         onSetCover={pl.setCover}
@@ -448,19 +494,14 @@ export default function Page() {
         onMove={(index, dir) => selected && pl.moveTrack(selected.id, index, dir)}
       />
       {mode === "random-dance" && selected && <p className="random-status"><span className="status-pulse" /> Random Dance: พร้อมเล่น {randomDanceEligibleCount}/{selected.items.length} คลิปที่มีผลไฮไลท์และฟอร์เมชันบันทึกแล้ว · สุ่มไม่ซ้ำก่อนวนรอบใหม่</p>}
-      </section>
+      </section>}
 
-      <section id="discover" className="content-section discover-section">
+      {activeView === "practice" && !current && <section id="discover" className="content-section discover-section">
       <div className="section-heading"><div><span className="eyebrow">DISCOVER YOUR NEXT PRACTICE</span><h2>ค้นหาคลิปเต้น</h2></div><span className="section-side-note">ค้นหาจากชื่อเพลง ศิลปิน หรือท่าเต้น</span></div>
-      <YouTubeSearch
-        key={`search-${homeKey}`}
-        activeId={current?.id}
-        onSelect={(video) => play(video, null)}
-        onAdd={addToPlaylist}
-        likedIds={pl.likedIds}
-        onToggleLike={pl.toggleLike}
-      />
-      </section>
+      <p className="empty-practice">Choose a dance video to practice. Search above or open one of your playlists.</p>
+      </section>}
+
+      {activeView === "random" && !current && <section className="random-empty"><span className="eyebrow">RANDOM DANCE</span><h2>Ready when you are.</h2><p>Choose a playlist with saved highlights and formations to start a session.</p><button className="welcome-cta" type="button" onClick={() => navigate("playlists")}>Choose a playlist ↗</button></section>}
 
       {pendingAddVideo && (
         <div
@@ -497,7 +538,9 @@ export default function Page() {
           </section>
         </div>
       )}
-      <footer className="site-footer"><span className="brand-mark" aria-hidden="true">M</span><span>MUVERSE</span><small>Make space to move.</small></footer>
+      <nav className="bottom-nav" aria-label="Main navigation">
+        {([ ["home", "⌂", "Home"], ["random", "⤨", "Random Dance"], ["practice", "▣", "Dance Practice"], ["playlists", "☷", "Playlists"], ["user", "♙", "User"] ] as const).map(([view, icon, label]) => <button type="button" key={view} className={activeView === view ? "active" : ""} onClick={() => navigate(view)} aria-current={activeView === view ? "page" : undefined}><span aria-hidden="true">{icon}</span><small>{label}</small></button>)}
+      </nav>
     </main>
   );
 }
