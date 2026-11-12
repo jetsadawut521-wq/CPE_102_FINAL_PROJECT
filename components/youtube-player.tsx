@@ -915,7 +915,7 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
 
   return (
     <div ref={rootRef} className={`yp-root ${isFullscreen ? "is-fullscreen" : ""} ${isFullscreen && idle ? "is-idle" : ""}`}>
-      <div className={`yp-view-layout ${["loading", "running", "ready"].includes(formationStatus) ? "has-formation" : ""}`}>
+      <div className={`yp-view-layout ${showAnalysisTools ? "has-formation" : ""}`}>
         <div className={`yp-stage ${mirrored ? "is-mirrored" : ""} ${calibrationArmed ? "is-calibrating" : ""}`}>
         {/* yp-frame ถูกขยายให้สูงกว่าเวที แล้วตัดส่วนเกินทิ้ง เพื่อซ่อนแถบชื่อคลิปของ YouTube
             (ตัวอักษรนั้นอยู่ใน iframe ข้ามโดเมน จึงกลับด้านเฉพาะตัวอักษรไม่ได้ ต้องซ่อนแทน) */}
@@ -997,8 +997,9 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
         )}
         </div>
 
-        {showAnalysisTools && ["loading", "running", "ready"].includes(formationStatus) && (
+        {showAnalysisTools && (
           <aside className="yp-formation-map" aria-label="แผนผังแถว">
+            <strong className="yp-practice-heading">PRACTICE TOOLS</strong>
             <strong>แผนผังแถวตามเวลาในคลิป</strong>
             <div className={`yp-formation-map__stage ${editingFormation ? "is-editing" : ""}`}
               onPointerMove={moveFormationDot}
@@ -1021,7 +1022,7 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
               {formationPoints.length === 0 && <span className="yp-formation-map__empty">···</span>}
             </div>
             <small>
-              {formationStatus === "loading" ? "กำลังเริ่มงานวิเคราะห์… คลิปยังเล่นต่อได้" : formationStatus === "running"
+              {formationStatus === "off" ? "ตั้งค่าพื้นเวที 4 มุมเพื่อเริ่มวิเคราะห์ฟอร์เมชัน" : formationStatus === "loading" ? "กำลังเริ่มงานวิเคราะห์… คลิปยังเล่นต่อได้" : formationStatus === "running"
                 ? formationStage === "downloading" ? "กำลังเตรียมวิดีโอ · คลิปเล่นต่อได้ตามปกติ"
                 : formationStage === "extracting-frames" ? "กำลังเลือกภาพตัวอย่างจากคลิป · คลิปเล่นต่อได้ตามปกติ"
                   : formationStage === "projecting-floor" ? "กำลังแปลงตำแหน่งเท้าบนพื้นเวที · คลิปเล่นต่อได้ตามปกติ"
@@ -1064,37 +1065,51 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
                 </button>
               </div>
             )}
+            <div className="yp-practice-settings">
+              <div className="yp-practice-shortcuts">
+                <label className="yp-tool-pill"><input type="checkbox" checked={mirrored} onChange={(e) => setMirrored(e.target.checked)} /> Mirror</label>
+                <label className="yp-tool-pill">Speed
+                  <select value={rate} disabled={!ready} onChange={(e) => changeRate(Number(e.target.value))}>
+                    {RATES.map((r) => <option key={r} value={r}>{r === 1 ? "×1" : `×${r}`}</option>)}
+                  </select>
+                </label>
+              </div>
+              <label className="yp-volume-control">เสียง <input type="range" min={0} max={100} value={volume} onChange={(e) => changeVolume(Number(e.target.value))} /></label>
+              <label className="yp-quality-control">ความละเอียด
+                <select value={quality} disabled={!ready} onChange={(e) => changeQuality(e.target.value)}>
+                  <option value="auto">อัตโนมัติ</option>
+                  {qualityLevels.map((q) => <option key={q} value={q}>{QUALITY_LABELS[q] ?? q}</option>)}
+                </select>
+              </label>
+            </div>
+            <div className="yp-formation-tools">
+              {!calibrationArmed ? <button type="button" onClick={beginStageCalibration}>
+                {stageCorners.length === 4 ? "ตั้งค่าพื้นเวทีใหม่" : "ตั้งค่าพื้นเวที · Mark 4 points"}
+              </button> : <>
+                <button type="button" onClick={saveStageCalibrationDraft}>บันทึกตำแหน่งมุมเวที</button>
+                <button type="button" onClick={cancelStageCalibration}>ยกเลิก</button>
+              </>}
+              <small>
+                {calibrationArmed
+                  ? "ลากจุด 1–4 ไปวางที่มุมเวที แล้วกดบันทึกตำแหน่ง (ยกเลิกได้โดยไม่เปลี่ยนค่าที่บันทึกไว้)"
+                  : stageCorners.length !== 4 && formationStatus === "off"
+                    ? "Mark 4 points to show the formation."
+                  : ["loading", "running"].includes(formationStatus)
+                  ? "วิเคราะห์เบื้องหลัง คลิปยังเล่นต่อได้"
+                  : "จุดคำนวณจากตำแหน่งเท้าบนพื้นเวที"}
+              </small>
+              <button
+                type="button"
+                onClick={["loading", "running"].includes(formationStatus) ? stopFormationAnalysis : startFormationAnalysis}
+                disabled={!stageCorners.length && !["loading", "running"].includes(formationStatus)}
+              >
+                {formationStatus === "loading" ? "กำลังเริ่มวิเคราะห์… (ยกเลิก)" : formationStatus === "running" ? "หยุดรอผลวิเคราะห์" : formationStatus === "ready" ? "วิเคราะห์แถวอีกครั้ง" : "วิเคราะห์แถวทั้งคลิป"}
+              </button>
+              {formationError && <small className="yp-formation-error" role="status">วิเคราะห์ตำแหน่งไม่ได้: {formationError}</small>}
+            </div>
           </aside>
         )}
       </div>
-
-      {showAnalysisTools && !isFullscreen && (
-        <div className="yp-formation-tools">
-          {!calibrationArmed ? <button type="button" onClick={beginStageCalibration}>
-            {stageCorners.length === 4 ? "ตั้งค่าพื้นเวทีใหม่" : "ตั้งค่าพื้นเวที (4 จุด)"}
-          </button> : <>
-            <button type="button" onClick={saveStageCalibrationDraft}>บันทึกตำแหน่งมุมเวที</button>
-            <button type="button" onClick={cancelStageCalibration}>ยกเลิก</button>
-          </>}
-          <button
-            type="button"
-            onClick={["loading", "running"].includes(formationStatus) ? stopFormationAnalysis : startFormationAnalysis}
-            disabled={!stageCorners.length && !["loading", "running"].includes(formationStatus)}
-          >
-            {formationStatus === "loading" ? "กำลังเริ่มวิเคราะห์… (ยกเลิก)" : formationStatus === "running" ? "หยุดรอผลวิเคราะห์" : formationStatus === "ready" ? "วิเคราะห์แถวอีกครั้ง" : "วิเคราะห์แถวทั้งคลิป"}
-          </button>
-          <small>
-            {calibrationArmed
-              ? "ลากจุด 1–4 ไปวางที่มุมเวทีให้ตรงกับภาพ แล้วกดบันทึกตำแหน่ง (ยกเลิกได้โดยไม่เปลี่ยนค่าที่บันทึกไว้)"
-              : stageCorners.length !== 4 && formationStatus === "off"
-                ? "ตั้งค่าพื้นเวที 4 มุมก่อน เพื่อแปลงตำแหน่งเท้าเป็นแผนผังมองจากด้านบน"
-              : ["loading", "running"].includes(formationStatus)
-              ? "วิเคราะห์เบื้องหลัง ไม่หยุดหรือหน่วงคลิป · เมื่อเสร็จ แผนผังจะตามตำแหน่งเวลาในคลิป"
-              : "วิเคราะห์ใน Ubuntu เครื่องนี้ ไม่ต้องแชร์หน้าจอ · จุดคำนวณจากตำแหน่งเท้าบนพื้นเวที"}
-          </small>
-          {formationError && <small className="yp-formation-error" role="status">วิเคราะห์ตำแหน่งไม่ได้: {formationError}</small>}
-        </div>
-      )}
 
       <div className="yp-controls">
         <div className="yp-seek">
@@ -1181,7 +1196,7 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
         />}
 
         {/* ปกติแสดงเป็นแถวใต้จอ แต่ตอนเต็มจอจะไปอยู่ในเมนูจุดสามจุดแทน */}
-        {!isFullscreen && <div className="yp-row">{settings}</div>}
+        {!isFullscreen && showAnalysisTools && <div className="yp-extra-settings">{settings}</div>}
       </div>
     </div>
   );
