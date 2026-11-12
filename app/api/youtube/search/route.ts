@@ -1,4 +1,4 @@
-// app/api/youtube/search/route.ts
+// app/api/youtube/search/route.tshttps://github.com/jetsadawut521-wq/CPE_102_FINAL_PROJECT/blob/search_ml/app/api/youtube/search/route.ts
 // ค้นหาวิดีโอจาก YouTube Data API v3 ฝั่งเซิร์ฟเวอร์ เพื่อไม่ให้ API key รั่วไปที่เบราว์เซอร์
 import { NextRequest, NextResponse } from "next/server";
 import { classifyVideo } from "@/lib/search-category";
