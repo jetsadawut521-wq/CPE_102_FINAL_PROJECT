@@ -2,16 +2,18 @@
 // ค้นหาวิดีโอจาก YouTube Data API v3 ฝั่งเซิร์ฟเวอร์ เพื่อไม่ให้ API key รั่วไปที่เบราว์เซอร์
 import { NextRequest, NextResponse } from "next/server";
 import { classifyVideo } from "@/lib/search-category";
+import { classifyVideosWithML } from "@/lib/search/ml-classifier";
+import type {
+  VideoMetadata,
+  VideoClassification,
+  VideoCategory,
+} from "@/lib/search/types";
+
+export const runtime = "nodejs";
 import type { VideoItem } from "@/lib/youtube";
 
 const API = "https://www.googleapis.com/youtube/v3";
 
-// คำที่ต่อท้ายเพื่อให้ผลลัพธ์ตรงกับโหมดของ Muverse
-const MODE_SUFFIX: Record<string, string> = {
-  all: "",
-  follow: " dance along",
-  tutorial: " dance tutorial",
-};
 
 function decodeEntities(text: string): string {
   return text
@@ -51,7 +53,7 @@ export async function GET(req: NextRequest) {
       maxResults: mode === "all" ? "12" : "50",
       videoEmbeddable: "true", // เอาเฉพาะคลิปที่ฝังเล่นได้
       safeSearch: "moderate",
-      q: q + (MODE_SUFFIX[mode] ?? ""),
+      q,
       key,
     }).toString();
 
@@ -81,38 +83,131 @@ export async function GET(req: NextRequest) {
 
     if (!detailRes.ok) return NextResponse.json({ error: detailJson?.error?.message ?? "ดึงข้อมูลคลิปไม่สำเร็จ" }, { status: detailRes.status });
 
-    const categories = new Map<string, string>();
-    const durations = new Map<string, number>();
-    const embeddable = new Set<string>();
-    for (const v of detailJson.items ?? []) {
-      categories.set(v.id, classifyVideo(decodeEntities(v.snippet?.title ?? ""), v.snippet?.tags ?? [], v.snippet?.description ?? ""));
-      durations.set(v.id, parseDuration(v.contentDetails?.duration));
-      if (v.status?.embeddable) embeddable.add(v.id);
-    }
+    
+const durations = new Map<string, number>();
+const embeddable = new Set<string>();
+const detailById = new Map<string, any>();
 
-    const items: VideoItem[] = (searchJson.items ?? [])
-      .filter((it: { id: { videoId: string } }) => embeddable.has(it.id.videoId) && (mode === "all" || categories.get(it.id.videoId) === mode))
-      .slice(0, 12)
-      .map(
-        (it: {
-          id: { videoId: string };
-          snippet: {
-            title: string;
-            channelTitle: string;
-            thumbnails: { medium?: { url: string }; default?: { url: string } };
-          };
-        }) => ({
-          id: it.id.videoId,
-          title: decodeEntities(it.snippet.title),
-          channel: decodeEntities(it.snippet.channelTitle),
-          thumbnail: it.snippet.thumbnails.medium?.url ?? it.snippet.thumbnails.default?.url ?? "",
-          durationSec: durations.get(it.id.videoId) ?? 0,
-          category: categories.get(it.id.videoId) as VideoItem["category"],
-        })
-      );
+for (const v of detailJson.items || []) {
+  detailById.set(v.id, v);
 
-    return NextResponse.json({ items });
-  } catch {
-    return NextResponse.json({ error: "เชื่อมต่อ YouTube ไม่ได้ ลองใหม่อีกครั้ง" }, { status: 502 });
+  durations.set(
+    v.id,
+    parseDuration(v.contentDetails.duration)
+  );
+
+  if (v.status.embeddable) {
+    embeddable.add(v.id);
   }
 }
+
+const searchItems = searchJson.items || [];
+
+const mlEnabled = process.env.MUVERSE_ML_ENABLED === "true";
+
+const classifications = new Map<
+  string,
+  VideoClassification
+>();
+
+// ML classification
+if (mlEnabled) {
+  const metadata: VideoMetadata[] = searchItems.map((it: any) => {
+    const details = detailById.get(it.id.videoId);
+
+    return {
+      id: it.id.videoId,
+      title: decodeEntities(it.snippet.title || ""),
+      description: decodeEntities(
+        details?.snippet?.description ||
+        it.snippet.description ||
+        ""
+      ),
+      tags: details?.snippet?.tags || [],
+    };
+  });
+
+  try {
+    const mlResults = await classifyVideosWithML(metadata);
+
+    for (const [id, result] of mlResults) {
+      classifications.set(id, result);
+    }
+  } catch (error) {
+    console.error("ML classification failed:", error);
+
+    return NextResponse.json(
+      { error: "ระบบวิเคราะห์วิดีโอด้วย ML ยังไม่พร้อมใช้งาน" },
+      { status: 503 }
+    );
+  }
+}
+
+// Legacy regex fallback when ML is disabled
+else {
+  for (const it of searchItems) {
+    const id = it.id.videoId;
+    const details = detailById.get(id);
+
+    const category = classifyVideo(
+      decodeEntities(it.snippet.title || ""),
+      details?.snippet?.tags || [],
+      decodeEntities(
+        details?.snippet?.description ||
+        it.snippet.description ||
+        ""
+      )
+    );
+
+    // Legacy classifier cannot reliably distinguish
+    // relevant "other" videos from irrelevant videos.
+    classifications.set(id, {
+      relevant: true,
+      category,
+      relevanceScore: 0,
+      irrelevantScore: 0,
+      categoryScore: 0,
+    });
+  }
+}
+
+const items: VideoItem[] = searchItems
+  .filter((it: any) => {
+    const id = it.id.videoId;
+    const prediction = classifications.get(id);
+
+    if (!embeddable.has(id) || !prediction) {
+      return false;
+    }
+
+    // ML determines relevance when enabled.
+    if (mlEnabled && !prediction.relevant) {
+      return false;
+    }
+
+    // Apply the requested category filter.
+    if (mode !== "all" && prediction.category !== mode) {
+      return false;
+    }
+
+    return true;
+  })
+  .slice(0, 12)
+  .map((it: any) => {
+    const id = it.id.videoId;
+    const prediction = classifications.get(id)!;
+
+    return {
+      id,
+      title: decodeEntities(it.snippet.title),
+      channel: decodeEntities(it.snippet.channelTitle),
+      thumbnail:
+        it.snippet.thumbnails.medium?.url ||
+        it.snippet.thumbnails.default?.url ||
+        "",
+      durationSec: durations.get(id) || 0,
+      category: prediction.category,
+    };
+  });
+
+return NextResponse.json({ items });
