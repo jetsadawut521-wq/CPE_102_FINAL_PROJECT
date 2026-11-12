@@ -7,6 +7,7 @@ export interface VideoItem {
   channel: string;
   thumbnail: string;
   durationSec: number;
+  category?: "follow" | "tutorial" | "other";
 }
 
 export type SearchMode = "all" | "follow" | "tutorial";

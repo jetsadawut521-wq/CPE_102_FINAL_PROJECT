@@ -107,6 +107,7 @@ export async function GET(req: NextRequest) {
           channel: decodeEntities(it.snippet.channelTitle),
           thumbnail: it.snippet.thumbnails.medium?.url ?? it.snippet.thumbnails.default?.url ?? "",
           durationSec: durations.get(it.id.videoId) ?? 0,
+          category: categories.get(it.id.videoId) as VideoItem["category"],
         })
       );
 

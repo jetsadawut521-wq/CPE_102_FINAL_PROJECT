@@ -10,6 +10,7 @@ import YouTubeSearch from "@/components/youtube-search";
 import WatchHistory from "@/components/watch-history";
 import { useWatchHistory } from "@/lib/use-watch-history";
 import { useAutoHighlights } from "@/lib/auto-highlights";
+import { classifyVideo } from "@/lib/search-category";
 import { readSavedFormations, readSavedHighlights } from "@/lib/analysis-storage";
 import { isLikedId, usePlaylists, type PlayMode, type Playlist } from "@/lib/playlist";
 import type { VideoItem } from "@/lib/youtube";
@@ -73,7 +74,8 @@ export default function Page() {
   const [mode, setMode] = useState<PlayMode>("sequential");
   const [analysisRevision, setAnalysisRevision] = useState(0);
   const [focusSerial, setFocusSerial] = useState(0);
-  const auto = useAutoHighlights(current?.id); // ท่อนฮุคที่ระบบวิเคราะห์ให้ของคลิปที่กำลังเล่น
+  const isTutorial = !!current && (current.category === "tutorial" || classifyVideo(current.title) === "tutorial");
+  const auto = useAutoHighlights(isTutorial ? undefined : current?.id); // คลิปสอนเต้นไม่เรียกตัววิเคราะห์ท่อนฮุค
   const [homeKey, setHomeKey] = useState(0); // เปลี่ยนค่านี้เพื่อรีเซ็ตหน้าค้นหา/หน้า playlist กลับสู่สภาพเริ่มต้น
   const session = useRef<ShuffleSession>({ sourceId: null, history: [], cursor: -1, round: new Set() });
   const randomSkipGuard = useRef<string | null>(null);
@@ -363,6 +365,7 @@ export default function Page() {
           </p>
           <YouTubePlayer
             videoId={current.id}
+            showAnalysisTools={!isTutorial}
             onEnded={() => step(1, false)}
             focusRange={focusRange}
             onFocusRangeEnd={() => step(1, false)}
@@ -370,6 +373,7 @@ export default function Page() {
             highlights={auto.segments}
             onHighlightsChange={auto.saveEdits}
           />
+          {!isTutorial && <>
           {["queued", "busy"].includes(auto.audioStatus ?? "") && <p><small>กำลังรอคิววิเคราะห์เสียง สามารถเล่นคลิปต่อได้…</small></p>}
           {auto.audioStatus === "downloading" && <p><small>กำลังเตรียมเสียงของคลิปนี้…</small></p>}
           {auto.audioStatus === "decoding" && <p><small>กำลังอ่านไฟล์เสียงของคลิปนี้…</small></p>}
@@ -382,6 +386,7 @@ export default function Page() {
           {auto.status === "loading" && !["queued", "busy", "downloading", "decoding", "separating", "features", "loading-model", "analyzing"].includes(auto.audioStatus ?? "") && <small>กำลังค้นหาข้อมูลไฮไลท์ของคลิปนี้…</small>}
           {auto.status === "none" && !["failed", "timeout"].includes(auto.audioStatus ?? "") && <small>{NO_HIGHLIGHT_REASON[auto.reason ?? ""] ?? NO_HIGHLIGHT_REASON.default}</small>}
           {auto.status === "error" && <small>วิเคราะห์ท่อนฮุคไม่สำเร็จ: {auto.reason}</small>}
+          </>}
         </section>
       )}
 

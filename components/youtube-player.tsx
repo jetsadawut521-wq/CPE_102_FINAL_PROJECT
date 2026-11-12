@@ -13,6 +13,7 @@ import "./youtube-player.css";
 
 interface Props {
   videoId: string;
+  showAnalysisTools?: boolean;
   autoPlay?: boolean;
   onEnded?: () => void;
   onError?: (code: number) => void; // รหัส error จาก YouTube (เช่น 101/150 = ฝังไม่ได้)
@@ -69,8 +70,12 @@ type FormationPoint = Omit<SavedFormationPoint, "color"> & { color: string };
 type FormationSnapshot = SavedFormationSnapshot;
 type StageCorner = SavedStageCorner;
 const FORMATION_COLORS = ["#ffe600", "#ff5b9a", "#4de1ff", "#a78bfa", "#ff9f43", "#68e39a", "#ff6b6b", "#5eead4", "#c084fc", "#facc15"];
+const DEFAULT_CALIBRATION: StageCorner[] = [
+  { x: 0.18, y: 0.34 }, { x: 0.82, y: 0.34 },
+  { x: 0.82, y: 0.82 }, { x: 0.18, y: 0.82 },
+];
 
-export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onError, loopOne = false, highlights = NO_HIGHLIGHTS,
+export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoPlay = true, onEnded, onError, loopOne = false, highlights = NO_HIGHLIGHTS,
   onHighlightsChange, focusRange, onFocusRangeEnd }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -159,12 +164,13 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const [formationTimeline, setFormationTimeline] = useState<FormationSnapshot[]>([]);
   const [formationStage, setFormationStage] = useState<string | null>(null);
   const [calibrationArmed, setCalibrationArmed] = useState(false);
-  const [calibrationMarks, setCalibrationMarks] = useState<StageCorner[]>([]);
+  const [calibrationDraft, setCalibrationDraft] = useState<StageCorner[]>([]);
   const [stageCorners, setStageCorners] = useState<StageCorner[]>([]);
   const [editingFormation, setEditingFormation] = useState(false);
   const [selectedFormationIndex, setSelectedFormationIndex] = useState(0);
   const [formationDirty, setFormationDirty] = useState(false);
   const draggingPointRef = useRef<number | null>(null);
+  const draggingCornerRef = useRef<number | null>(null);
 
   useEffect(() => {
     onEndedRef.current = onEnded;
@@ -194,7 +200,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     setFormationStage(null);
     setFormationError(null);
     setCalibrationArmed(false);
-    setCalibrationMarks([]);
+    setCalibrationDraft([]);
     setStageCorners(corners ?? []);
     setEditingFormation(false);
     setFormationDirty(false);
@@ -651,24 +657,6 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
 
   // แตะครั้งเดียว = เล่น/หยุด, แตะสองครั้ง = ข้าม/ย้อน 10 วิ (ขวา = ข้าม, ซ้าย = ย้อน)
   const handleTap = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (calibrationArmed) {
-      e.preventDefault();
-      const rect = e.currentTarget.getBoundingClientRect();
-      const next = [...calibrationMarks, {
-        x: Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)),
-        y: Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height)),
-      }];
-      setCalibrationMarks(next);
-      if (next.length === 4) {
-        // Convert the visible corner order to the original, unmirrored frame.
-        const ordered = mirrored ? [next[1], next[0], next[3], next[2]] : next;
-        const corners = ordered.map((point) => ({ x: mirrored ? 1 - point.x : point.x, y: point.y }));
-        setStageCorners(corners);
-        saveStageCalibration(videoId, corners);
-        setCalibrationArmed(false);
-      }
-      return;
-    }
     if (menuOpen) {
       setMenuOpen(false); // แตะที่จอตอนเมนูเปิด = ปิดเมนูอย่างเดียว ไม่สลับเล่น/หยุด
       return;
@@ -743,17 +731,56 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   }, []);
 
   const beginStageCalibration = useCallback(() => {
-    formationAbortRef.current?.abort();
-    formationAbortRef.current = null;
     playerRef.current?.pauseVideo();
     setFormationError(null);
-    setFormationStatus("off");
-    setFormationTimeline([]);
-    setFormationPoints([]);
-    setCalibrationMarks([]);
-    setStageCorners([]);
+    // Edit a draft only. Existing calibration and analyzed formations remain
+    // active until the user explicitly saves a replacement.
+    const visibleCorners = stageCorners.length === 4
+      ? (mirrored
+        ? [stageCorners[1], stageCorners[0], stageCorners[3], stageCorners[2]].map((point) => ({ x: 1 - point.x, y: point.y }))
+        : stageCorners.map((point) => ({ ...point })))
+      : DEFAULT_CALIBRATION.map((point) => ({ ...point }));
+    setCalibrationDraft(visibleCorners);
     setCalibrationArmed(true);
-  }, []);
+  }, [mirrored, stageCorners]);
+
+  const moveCalibrationCorner = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!calibrationArmed || draggingCornerRef.current === null) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const point = {
+      x: Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)),
+      y: Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height)),
+    };
+    setCalibrationDraft((draft) => draft.map((corner, index) => index === draggingCornerRef.current ? point : corner));
+  };
+
+  const cancelStageCalibration = () => {
+    draggingCornerRef.current = null;
+    setCalibrationArmed(false);
+    setCalibrationDraft([]);
+  };
+
+  const saveStageCalibrationDraft = () => {
+    if (calibrationDraft.length !== 4) return;
+    const ordered = mirrored
+      ? [calibrationDraft[1], calibrationDraft[0], calibrationDraft[3], calibrationDraft[2]]
+      : calibrationDraft;
+    const corners = ordered.map((point) => ({ x: mirrored ? 1 - point.x : point.x, y: point.y }));
+    const changed = stageCorners.length !== 4 || corners.some((corner, index) =>
+      Math.abs(corner.x - stageCorners[index].x) > 0.001 || Math.abs(corner.y - stageCorners[index].y) > 0.001);
+    if (changed) {
+      formationAbortRef.current?.abort();
+      formationAbortRef.current = null;
+      setFormationTimeline([]);
+      setFormationPoints([]);
+      setFormationDirty(false);
+      setFormationStatus("off");
+      saveFormations(videoId, []);
+    }
+    setStageCorners(corners);
+    saveStageCalibration(videoId, corners);
+    cancelStageCalibration();
+  };
 
   const startFormationAnalysis = useCallback(async () => {
     if (stageCorners.length !== 4) {
@@ -903,12 +930,25 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
             {focusCountdown}
           </div>
         )}
-        {calibrationMarks.map((point, index) => (
-          <span key={`cal-${index}`} className="yp-calibration-mark" style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}>
-            {index + 1}
-          </span>
-        ))}
-
+        {calibrationArmed && (
+          <div className="yp-calibration-overlay" onPointerMove={moveCalibrationCorner}
+            onPointerUp={() => { draggingCornerRef.current = null; }}
+            onPointerCancel={() => { draggingCornerRef.current = null; }}>
+            <svg className="yp-calibration-shape" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+              <polygon points={calibrationDraft.map((point) => `${point.x * 100},${point.y * 100}`).join(" ")} />
+            </svg>
+            {calibrationDraft.map((point, index) => (
+              <button key={`cal-${index}`} type="button" className="yp-calibration-mark"
+                style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}
+                onPointerDown={(event) => {
+                  event.preventDefault(); event.stopPropagation();
+                  draggingCornerRef.current = index;
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                aria-label={`ลากมุมเวที ${index + 1}`} title={`มุมเวที ${index + 1}`}>{index + 1}</button>
+            ))}
+          </div>
+        )}
         {/* ปุ่มเต็มจอ: จางๆ มุมขวาล่างของจอ ชัดขึ้นเมื่อเอาเมาส์ไปจ่อ (อยู่นอก yp-frame จึงไม่ถูกกลับด้าน) */}
         <button
           type="button"
@@ -957,7 +997,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
         )}
         </div>
 
-        {["loading", "running", "ready"].includes(formationStatus) && (
+        {showAnalysisTools && ["loading", "running", "ready"].includes(formationStatus) && (
           <aside className="yp-formation-map" aria-label="แผนผังแถว">
             <strong>แผนผังแถวตามเวลาในคลิป</strong>
             <div className={`yp-formation-map__stage ${editingFormation ? "is-editing" : ""}`}
@@ -1028,16 +1068,14 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
         )}
       </div>
 
-      {!isFullscreen && (
+      {showAnalysisTools && !isFullscreen && (
         <div className="yp-formation-tools">
-          <button type="button" onClick={() => {
-            if (calibrationArmed) {
-              setCalibrationArmed(false);
-              setCalibrationMarks([]);
-            } else beginStageCalibration();
-          }}>
-            {calibrationArmed ? `คลิกมุมพื้นเวที ${calibrationMarks.length}/4` : stageCorners.length === 4 ? "ตั้งค่าพื้นเวทีใหม่" : "ตั้งค่าพื้นเวที (4 จุด)"}
-          </button>
+          {!calibrationArmed ? <button type="button" onClick={beginStageCalibration}>
+            {stageCorners.length === 4 ? "ตั้งค่าพื้นเวทีใหม่" : "ตั้งค่าพื้นเวที (4 จุด)"}
+          </button> : <>
+            <button type="button" onClick={saveStageCalibrationDraft}>บันทึกตำแหน่งมุมเวที</button>
+            <button type="button" onClick={cancelStageCalibration}>ยกเลิก</button>
+          </>}
           <button
             type="button"
             onClick={["loading", "running"].includes(formationStatus) ? stopFormationAnalysis : startFormationAnalysis}
@@ -1047,7 +1085,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
           </button>
           <small>
             {calibrationArmed
-              ? "หยุดคลิปไว้ คลิกบนพื้นเท่านั้น: 1 ไกลซ้ายตรงรอยต่อผนัง-พื้น → 2 ไกลขวาตรงรอยต่อผนัง-พื้น → 3 ใกล้ขวา → 4 ใกล้ซ้าย (อย่าคลิกบนผนัง)"
+              ? "ลากจุด 1–4 ไปวางที่มุมเวทีให้ตรงกับภาพ แล้วกดบันทึกตำแหน่ง (ยกเลิกได้โดยไม่เปลี่ยนค่าที่บันทึกไว้)"
               : stageCorners.length !== 4 && formationStatus === "off"
                 ? "ตั้งค่าพื้นเวที 4 มุมก่อน เพื่อแปลงตำแหน่งเท้าเป็นแผนผังมองจากด้านบน"
               : ["loading", "running"].includes(formationStatus)
@@ -1063,7 +1101,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
           <span>{formatTime(time)}</span>
           <div className="yp-track">
             {/* แถบสีบอกช่วงท่อนยอดนิยม (ไม่รับเมาส์ ให้คลิกกรอที่แถบกรอได้ตามปกติ) */}
-            {duration > 0 && highlights.length > 0 && (
+            {showAnalysisTools && duration > 0 && highlights.length > 0 && (
               <div className="yp-hl-lane" aria-hidden="true">
                 {highlights.map((h, i) =>
                   h.start < duration ? (
@@ -1098,7 +1136,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
           <span>{formatTime(duration)}</span>
         </div>
 
-        {highlights.length > 0 && (
+        {showAnalysisTools && highlights.length > 0 && (
           <div className="yp-hls" role="group" aria-label="ท่อนยอดนิยม">
             {highlights.map((h, i) => (
               <button
@@ -1134,13 +1172,13 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
           </div>
         )}
 
-        <HighlightEditor
+        {showAnalysisTools && <HighlightEditor
           key={`highlight-editor-${videoId}`}
           highlights={highlights}
           duration={duration}
           currentTime={time}
           onSave={onHighlightsChange}
-        />
+        />}
 
         {/* ปกติแสดงเป็นแถวใต้จอ แต่ตอนเต็มจอจะไปอยู่ในเมนูจุดสามจุดแทน */}
         {!isFullscreen && <div className="yp-row">{settings}</div>}
