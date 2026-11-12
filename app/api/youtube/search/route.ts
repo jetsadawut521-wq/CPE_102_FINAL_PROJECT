@@ -50,7 +50,7 @@ export async function GET(req: NextRequest) {
     searchUrl.search = new URLSearchParams({
       part: "snippet",
       type: "video",
-      maxResults: mode === "all" ? "12" : "50",
+      maxResults: "50",
       videoEmbeddable: "true", // เอาเฉพาะคลิปที่ฝังเล่นได้
       safeSearch: "moderate",
       q,
@@ -191,7 +191,17 @@ const items: VideoItem[] = searchItems
     }
 
     return true;
-  })
+  }).sort((a: any, b: any) => {
+  if (!mlEnabled) return 0;
+
+  const scoreA =
+    classifications.get(a.id.videoId)?.relevanceScore ?? 0;
+
+  const scoreB =
+    classifications.get(b.id.videoId)?.relevanceScore ?? 0;
+
+  return scoreB - scoreA;
+})
   .slice(0, 12)
   .map((it: any) => {
     const id = it.id.videoId;
