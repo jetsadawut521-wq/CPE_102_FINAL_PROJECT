@@ -18,6 +18,7 @@ interface Props {
   onError?: (code: number) => void; // รหัส error จาก YouTube (เช่น 101/150 = ฝังไม่ได้)
   loopOne?: boolean; // เล่นคลิปนี้ซ้ำไปเรื่อย ๆ: จบแล้วเริ่มใหม่เองและไม่เรียก onEnded
   highlights?: AutoSegment[]; // ท่อนยอดนิยมที่ระบบวิเคราะห์ให้ แสดงบนแถบกรอ (ว่าง = ไม่แสดง)
+  onHighlightsChange?: (segments: AutoSegment[]) => void;
   focusRange?: { start: number; end: number; key: string };
   onFocusRangeEnd?: () => void;
 }
@@ -70,7 +71,7 @@ type StageCorner = SavedStageCorner;
 const FORMATION_COLORS = ["#ffe600", "#ff5b9a", "#4de1ff", "#a78bfa", "#ff9f43", "#68e39a", "#ff6b6b", "#5eead4", "#c084fc", "#facc15"];
 
 export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onError, loopOne = false, highlights = NO_HIGHLIGHTS,
-  focusRange, onFocusRangeEnd }: Props) {
+  onHighlightsChange, focusRange, onFocusRangeEnd }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YTPlayer | null>(null);
@@ -89,7 +90,8 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const focusEndRef = useRef(onFocusRangeEnd);
   const focusRangeRef = useRef(focusRange);
   const focusEndHandledRef = useRef(false);
-  const loadedFocusKeyRef = useRef(focusRange?.key ?? "");
+  const loadedFocusKeyRef = useRef("");
+  const countdownAudioRef = useRef<AudioContext | null>(null);
   const rateRef = useRef(1);
   const qualityRef = useRef("auto");
   const pauseAfterLoadRef = useRef(false); // เปลี่ยนความละเอียดตอนหยุดอยู่ → โหลดใหม่แล้วหยุดต่อ
@@ -103,7 +105,42 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [focusCountdown, setFocusCountdown] = useState<number | null>(null);
   const [seeking, setSeeking] = useState(false);
+
+  // Beep once whenever the visible Random Dance countdown changes (3, 2, 1).
+  useEffect(() => {
+    if (focusCountdown === null) return;
+    let cancelled = false;
+
+    const playCountdownBeep = async () => {
+      try {
+        const context = countdownAudioRef.current ?? new AudioContext();
+        countdownAudioRef.current = context;
+        if (context.state === "suspended") await context.resume();
+        if (cancelled) return;
+
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        const now = context.currentTime;
+        const pitch = focusCountdown === 1 ? 1046 : focusCountdown === 2 ? 880 : 740;
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(pitch, now);
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(0.18, now + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+        oscillator.start(now);
+        oscillator.stop(now + 0.21);
+      } catch {
+        // Browser audio policy may block the synthesized beep; playback continues normally.
+      }
+    };
+
+    void playCountdownBeep();
+    return () => { cancelled = true; };
+  }, [focusCountdown]);
   const [volume, setVolume] = useState(DEFAULT_VOLUME);
   const [mirrored, setMirrored] = useState(false);
   const [flash, setFlash] = useState<FlashState | null>(null);
@@ -349,6 +386,7 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
             onStateChange: (e: YTEvent) => {
               playingRef.current = e.data === YT_STATE.PLAYING;
               setPlaying(e.data === YT_STATE.PLAYING);
+              if (e.data !== YT_STATE.PLAYING) setFocusCountdown(null);
               if (e.data === YT_STATE.PLAYING) {
                 setDuration(safe(playerRef.current?.getDuration()));
                 // YouTube บางครั้งรีเซ็ตเสียงตอนเริ่มคลิปใหม่ จึงใส่ค่าที่ผู้ใช้ตั้งไว้ซ้ำทุกครั้งที่เริ่มเล่น
@@ -403,7 +441,6 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     loadedIdRef.current = videoId;
     setError(null);
     const startSeconds = focusRangeRef.current?.start ?? 0;
-    loadedFocusKeyRef.current = focusRangeRef.current?.key ?? "";
     focusEndHandledRef.current = false;
     setTime(startSeconds);
     setDuration(0);
@@ -417,14 +454,26 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
     hideCaptions();
   }, [videoId, ready, applyVolume, applyRate, hideCaptions]);
 
+  const focusRangeKey = focusRange ? `${focusRange.key}:${focusRange.start}:${focusRange.end}` : "";
   useEffect(() => {
-    if (!ready || !focusRange || loadedFocusKeyRef.current === focusRange.key) return;
-    loadedFocusKeyRef.current = focusRange.key;
+    const range = focusRangeRef.current;
+    if (!ready || !range || loadedFocusKeyRef.current === focusRangeKey) return;
+    loadedFocusKeyRef.current = focusRangeKey;
     focusEndHandledRef.current = false;
-    setTime(focusRange.start);
-    playerRef.current?.seekTo(focusRange.start, true);
-    playerRef.current?.playVideo();
-  }, [focusRange?.key, ready]);
+    setTime(range.start);
+    const player = playerRef.current;
+    const currentTime = safe(player?.getCurrentTime());
+    if (Math.abs(currentTime - range.start) > 1.5) {
+      player?.loadVideoById({
+        videoId: videoIdRef.current,
+        startSeconds: range.start,
+        suggestedQuality: qualityRef.current === "auto" ? undefined : qualityRef.current,
+      });
+    } else {
+      player?.seekTo(range.start, true);
+    }
+    player?.playVideo();
+  }, [focusRangeKey, ready]);
 
   // อัปเดตเวลาของ Seekbar ทุก 250ms
   useEffect(() => {
@@ -439,10 +488,20 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
       const range = focusRangeRef.current;
       if (range && playingRef.current && !focusEndHandledRef.current && t >= range.end) {
         focusEndHandledRef.current = true;
+        setFocusCountdown(null);
         p.pauseVideo();
         focusEndRef.current?.();
         return;
       }
+
+      // แสดง 3–2–1 ในช่วงท้าย 3 วินาทีก่อนจบช่วง Random Dance
+      const nextCountdown = range && playingRef.current && !focusEndHandledRef.current
+        ? Math.ceil(range.end - t)
+        : null;
+      const visibleCountdown = nextCountdown !== null && nextCountdown >= 1 && nextCountdown <= 3
+        ? nextCountdown
+        : null;
+      setFocusCountdown((current) => current === visibleCountdown ? current : visibleCountdown);
 
       // วนซ้ำเฉพาะท่อนที่เลือก: เล่นถึงท้ายท่อนแล้วกลับไปต้นท่อน (ถ้าผู้ใช้กรอข้ามไปไกลกว่านั้นเองจะไม่ดึงกลับ)
       const seg = activeHlRef.current !== null ? hlRef.current[activeHlRef.current] : undefined;
@@ -839,6 +898,11 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
         <div className="yp-tap" onPointerUp={handleTap} aria-hidden="true">
           {flash && <span className={`yp-flash yp-flash--${flash.pos}`}>{flash.text}</span>}
         </div>
+        {focusCountdown !== null && (
+          <div className="yp-focus-countdown" aria-live="assertive" aria-label={`คลิปถัดไปใน ${focusCountdown} วินาที`}>
+            {focusCountdown}
+          </div>
+        )}
         {calibrationMarks.map((point, index) => (
           <span key={`cal-${index}`} className="yp-calibration-mark" style={{ left: `${point.x * 100}%`, top: `${point.y * 100}%` }}>
             {index + 1}
@@ -1070,9 +1134,95 @@ export default function YouTubePlayer({ videoId, autoPlay = true, onEnded, onErr
           </div>
         )}
 
+        <HighlightEditor
+          key={`highlight-editor-${videoId}`}
+          highlights={highlights}
+          duration={duration}
+          currentTime={time}
+          onSave={onHighlightsChange}
+        />
+
         {/* ปกติแสดงเป็นแถวใต้จอ แต่ตอนเต็มจอจะไปอยู่ในเมนูจุดสามจุดแทน */}
         {!isFullscreen && <div className="yp-row">{settings}</div>}
       </div>
+    </div>
+  );
+}
+
+function HighlightEditor({ highlights, duration, currentTime, onSave }: {
+  highlights: AutoSegment[];
+  duration: number;
+  currentTime: number;
+  onSave?: (segments: AutoSegment[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<AutoSegment[]>([]);
+  const [saved, setSaved] = useState(false);
+  const valid = draft.every(segment => Number.isFinite(segment.start) && Number.isFinite(segment.end) &&
+    segment.start >= 0 && segment.end > segment.start && (!duration || segment.end <= duration));
+
+  function beginEditing() {
+    setDraft(highlights.map(segment => ({ ...segment })));
+    setSaved(false);
+    setOpen(true);
+  }
+
+  function update(index: number, changes: Partial<AutoSegment>) {
+    setDraft(items => items.map((item, i) => i === index ? { ...item, ...changes } : item));
+    setSaved(false);
+  }
+
+  function addSegment() {
+    if (!duration) return;
+    const start = Math.min(currentTime, Math.max(0, duration - 1));
+    const end = Math.min(duration, start + 10);
+    setDraft(items => [...items, { origin: "manual", kind: "chorus", start, end, label: "ท่อนที่เพิ่มเอง",
+      confidence: "medium", evidence: "เพิ่มโดยผู้ใช้" }]);
+    setSaved(false);
+  }
+
+  function save() {
+    if (!valid || !onSave) return;
+    onSave(draft.map(segment => ({ ...segment })).sort((a, b) => a.start - b.start));
+    setOpen(false);
+    setSaved(true);
+  }
+
+  return (
+    <div className="yp-highlight-editor">
+      {!open ? (
+        <>
+          <button type="button" onClick={beginEditing}>แก้ไขไฮไลท์</button>
+          {saved && <small role="status">บันทึกไฮไลท์แล้ว</small>}
+        </>
+      ) : (
+        <div className="yp-highlight-editor__panel">
+          <strong>แก้ไขท่อนไฮไลท์</strong>
+          {draft.length === 0 && <small>ยังไม่มีท่อนไฮไลท์ กด “เพิ่มท่อน” เพื่อสร้างเอง</small>}
+          {draft.map((segment, index) => (
+            <div className="yp-highlight-editor__row" key={`${index}-${segment.start}`}>
+              <label>ชื่อ
+                <input value={segment.label} onChange={event => update(index, { label: event.target.value })} />
+              </label>
+              <label>เริ่ม (วินาที)
+                <input type="number" min={0} max={duration || undefined} step={0.1} value={Number.isFinite(segment.start) ? segment.start : ""}
+                  onChange={event => update(index, { start: event.target.value === "" ? Number.NaN : Number(event.target.value) })} />
+              </label>
+              <label>จบ (วินาที)
+                <input type="number" min={0} max={duration || undefined} step={0.1} value={Number.isFinite(segment.end) ? segment.end : ""}
+                  onChange={event => update(index, { end: event.target.value === "" ? Number.NaN : Number(event.target.value) })} />
+              </label>
+              <button type="button" onClick={() => setDraft(items => items.filter((_, i) => i !== index))}>ลบท่อน</button>
+            </div>
+          ))}
+          <div className="yp-highlight-editor__actions">
+            <button type="button" onClick={addSegment} disabled={!duration}>เพิ่มท่อน ณ เวลาปัจจุบัน</button>
+            <button type="button" onClick={() => setOpen(false)}>ยกเลิก</button>
+            <button type="button" onClick={save} disabled={!valid}>บันทึกการแก้ไข</button>
+            {!valid && <small role="alert">ตรวจเวลาเริ่มและเวลาจบ: ต้องไม่ติดลบ เวลาจบต้องมากกว่าเวลาเริ่มและไม่เกินความยาวคลิป</small>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

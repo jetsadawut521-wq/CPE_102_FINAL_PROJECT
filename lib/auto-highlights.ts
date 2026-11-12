@@ -1,9 +1,9 @@
 // lib/auto-highlights.ts
 // ดึงท่อนฮุคที่ระบบวิเคราะห์ให้ของคลิปที่กำลังเล่น (เรียก /api/youtube/highlights)
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { selectHighlightProposal, retainDisplayedHighlights } from "./audio-highlights";
 import type { AutoSegment, HighlightsResponse } from "@/lib/highlight-analysis";
-import { readSavedHighlights, saveAnalyzedHighlights } from "@/lib/analysis-storage";
+import { hasEditedHighlights, readSavedHighlights, saveAnalyzedHighlights, saveEditedHighlights } from "@/lib/analysis-storage";
 
 type Status = "idle" | "loading" | "ready" | "none" | "error";
 
@@ -23,6 +23,7 @@ const NO_SEGMENTS: AutoSegment[] = [];
 // Remember what was actually displayed, separately from raw source caches.
 // Revisiting a clip must not change the winner just because a cache is faster.
 const displayedCache = new Map<string, AutoSegment[]>();
+const editedCache = new Map<string, AutoSegment[]>();
 
 export function useAutoHighlights(videoId: string | undefined): {
   status: Status;
@@ -31,6 +32,7 @@ export function useAutoHighlights(videoId: string | undefined): {
   audioStatus?: string;
   audioStage?: string;
   audioFailure?: string;
+  saveEdits: (segments: AutoSegment[]) => void;
 } {
   const [audio, setAudio] = useState<{ id: string; segments: AutoSegment[]; pending: boolean; status: string; stage?: string; engine?: string; failureReason?: string }>({ id: "", segments: [], pending: false, status: "idle" });
   const [state, setState] = useState<State>({ status: "idle", segments: NO_SEGMENTS });
@@ -38,6 +40,15 @@ export function useAutoHighlights(videoId: string | undefined): {
 
   useEffect(() => {
     if (!videoId) return;
+    const edited = editedCache.get(videoId);
+    if (edited || hasEditedHighlights(videoId)) {
+      const segments = edited ?? readSavedHighlights(videoId) ?? NO_SEGMENTS;
+      editedCache.set(videoId, segments);
+      const result: Result = { segments };
+      cache.set(videoId, result);
+      setState({ id: videoId, status: segments.length ? "ready" : "none", ...result });
+      return;
+    }
     const cached = cache.get(videoId);
     if (cached) {
       setState({ id: videoId, status: cached.segments.length > 0 ? "ready" : "none", ...cached });
@@ -59,6 +70,7 @@ export function useAutoHighlights(videoId: string | undefined): {
         if (!data) throw new Error(`เซิร์ฟเวอร์ตอบกลับผิดรูปแบบ (HTTP ${r.status}) ตรวจว่ามีไฟล์ app/api/youtube/highlights/route.ts`);
         if (!r.ok && !data.error) throw new Error(`เซิร์ฟเวอร์ตอบกลับ HTTP ${r.status}`);
         if (data.error) throw new Error(data.error);
+        if (editedCache.has(videoId) || hasEditedHighlights(videoId)) return;
         const result: Result = { source: data.source, segments: data.segments ?? NO_SEGMENTS, reason: data.reason };
         cache.set(videoId, result);
         saveAnalyzedHighlights(videoId, result.segments);
@@ -75,6 +87,17 @@ export function useAutoHighlights(videoId: string | undefined): {
   // Independent background analysis: playback never waits for the worker.
   useEffect(() => {
     if (!videoId) return;
+    if (editedCache.has(videoId) || hasEditedHighlights(videoId)) {
+      setAudio({ id: videoId, segments: [], pending: false, status: "edited" });
+      return;
+    }
+    // Keep saved hooks, but a saved dance break should not suppress hook analysis.
+    const saved = readSavedHighlights(videoId);
+    const savedHasHook = saved?.some(segment => segment.kind !== "dance-break") ?? false;
+    if (saved !== null && savedHasHook) {
+      setAudio({ id: videoId, segments: [], pending: false, status: "saved" });
+      return;
+    }
     const ac = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const started = Date.now();
@@ -108,10 +131,17 @@ export function useAutoHighlights(videoId: string | undefined): {
       source: state.id === videoId ? state.source : undefined },
   ), [videoId, state.id, state.segments, state.source, audio.id, audio.segments, audio.engine, audio.pending]);
 
+  const manualSegments = videoId ? editedCache.get(videoId) : undefined;
   const previous = shown.id === videoId ? shown.segments : (videoId && displayedCache.get(videoId)) || NO_SEGMENTS;
-  const segments = useMemo(() => retainDisplayedHighlights(previous, proposed), [previous, proposed]);
+  const segments = useMemo(() => manualSegments ?? retainDisplayedHighlights(previous, proposed), [manualSegments, previous, proposed]);
   useEffect(() => {
     if (!videoId) return;
+    const edited = editedCache.get(videoId);
+    if (edited) {
+      displayedCache.set(videoId, edited);
+      setShown(old => old.id === videoId && old.segments === edited ? old : { id: videoId, segments: edited });
+      return;
+    }
     const accepted = retainDisplayedHighlights(displayedCache.get(videoId) ?? NO_SEGMENTS, proposed);
     if (accepted.length) {
       displayedCache.delete(videoId);
@@ -129,14 +159,25 @@ export function useAutoHighlights(videoId: string | undefined): {
     setShown(old => old.id === videoId && old.segments === accepted ? old : { id: videoId, segments: accepted });
   }, [videoId, proposed]);
 
+  const saveEdits = useCallback((segments: AutoSegment[]) => {
+    if (!videoId) return;
+    const copy = [...segments].sort((a, b) => a.start - b.start);
+    editedCache.set(videoId, copy);
+    cache.set(videoId, { segments: copy });
+    displayedCache.set(videoId, copy);
+    saveEditedHighlights(videoId, copy);
+    setState({ id: videoId, status: copy.length ? "ready" : "none", segments: copy });
+    setShown({ id: videoId, segments: copy });
+  }, [videoId]);
+
   // Clip IDs isolate both pending source responses and the displayed snapshot.
-  if (!videoId) return { status: "idle", segments: NO_SEGMENTS };
+  if (!videoId) return { status: "idle", segments: NO_SEGMENTS, saveEdits };
   const audioStatus = audio.id === videoId ? audio.status : undefined;
   const audioStage = audio.id === videoId ? audio.stage : undefined;
   const audioFailure = audio.id === videoId ? audio.failureReason : undefined;
-  if (segments.length) return { status: "ready", segments, audioStatus, audioStage, audioFailure };
-  if (audio.id === videoId && audio.pending) return { status: "loading", segments: NO_SEGMENTS, audioStatus, audioStage, audioFailure };
+  if (segments.length) return { status: "ready", segments, audioStatus, audioStage, audioFailure, saveEdits };
+  if (audio.id === videoId && audio.pending) return { status: "loading", segments: NO_SEGMENTS, audioStatus, audioStage, audioFailure, saveEdits };
   const fastEmpty = audio.id === videoId && audio.engine === "fast" && audio.status === "ready" && state.id === videoId && state.status !== "loading";
   return { status: fastEmpty ? "none" : state.id === videoId ? state.status : "loading", segments,
-    reason: fastEmpty ? "fast-no-repeat" : state.id === videoId ? state.reason : undefined, audioStatus, audioStage, audioFailure };
+    reason: fastEmpty ? "fast-no-repeat" : state.id === videoId ? state.reason : undefined, audioStatus, audioStage, audioFailure, saveEdits };
 }

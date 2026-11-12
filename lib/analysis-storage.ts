@@ -44,6 +44,16 @@ export function saveAnalyzedHighlights(videoId: string, segments: AutoSegment[])
   writeMap(HIGHLIGHT_KEY, map);
 }
 
+export function hasEditedHighlights(videoId: string): boolean {
+  return readMap<{ manuallyEdited?: boolean }>(HIGHLIGHT_KEY)[videoId]?.manuallyEdited === true;
+}
+
+export function saveEditedHighlights(videoId: string, segments: AutoSegment[]) {
+  const map = readMap<{ segments: AutoSegment[]; savedAt: number; manuallyEdited?: boolean }>(HIGHLIGHT_KEY);
+  map[videoId] = { segments, savedAt: Date.now(), manuallyEdited: true };
+  writeMap(HIGHLIGHT_KEY, map);
+}
+
 export function readSavedFormations(videoId: string): FormationSnapshot[] | null {
   const value = readMap<{ formations?: FormationSnapshot[] }>(FORMATION_KEY)[videoId];
   if (!value || !Array.isArray(value.formations)) return null;
