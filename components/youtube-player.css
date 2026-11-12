@@ -5,10 +5,14 @@
 .yp-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 .yp-stage.is-mirrored .yp-frame { transform: scaleX(-1); }
 .yp-tap { position: absolute; inset: 0; cursor: pointer; touch-action: manipulation; user-select: none; }
-.yp-stage.is-calibrating, .yp-stage.is-calibrating .yp-tap { cursor: crosshair; }
-.yp-calibration-mark { position: absolute; z-index: 3; display: grid; place-items: center; width: 1.5rem; height: 1.5rem;
+.yp-stage.is-calibrating, .yp-stage.is-calibrating .yp-tap { cursor: default; }
+.yp-calibration-overlay { position: absolute; z-index: 4; inset: 0; pointer-events: none; }
+.yp-calibration-shape { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.yp-calibration-shape polygon { fill: rgb(236 72 153 / 14%); stroke: #ec4899; stroke-width: 0.55; vector-effect: non-scaling-stroke; }
+.yp-calibration-mark { position: absolute; display: grid; place-items: center; width: 2rem; height: 2rem; padding: 0;
   transform: translate(-50%, -50%); border: 2px solid #fff; border-radius: 50%; background: #ec4899; color: #fff;
-  font-size: 0.8rem; font-weight: 700; box-shadow: 0 1px 8px #000; pointer-events: none; }
+  font-size: 0.9rem; font-weight: 700; box-shadow: 0 1px 8px #000; pointer-events: auto; touch-action: none; cursor: grab; }
+.yp-calibration-mark:active { cursor: grabbing; }
 .yp-view-layout { display: block; max-width: 960px; }
 .yp-view-layout.has-formation { display: grid; grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr); gap: 0.85rem; align-items: center; }
 .yp-view-layout.has-formation .yp-stage { width: 100%; max-width: none; }
