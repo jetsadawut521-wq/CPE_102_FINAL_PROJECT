@@ -316,3 +316,21 @@ body { background:var(--paper); color:var(--ink); font-family:"Manrope","DM Sans
   .bottom-nav button small { font-size:9px; }
   .playlist-section .pl-lib { grid-template-columns:1fr 1fr; }
 }
+
+/* Practice controls stay beside the video in the Xpo practice panel. */
+.muverse-app .yp-view-layout.has-formation { grid-template-columns:minmax(0,1.8fr) minmax(280px,.9fr); align-items:stretch; }
+.muverse-app .yp-formation-map { align-content:start; gap:12px; }
+.muverse-app .yp-practice-heading { font-size:1.2rem; font-weight:800; }
+.muverse-app .yp-practice-settings { display:grid; gap:12px; }
+.muverse-app .yp-practice-shortcuts { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.muverse-app .yp-tool-pill { display:flex; min-height:44px; align-items:center; justify-content:center; gap:8px; padding:7px 10px; border:0; border-radius:999px; background:#171717; color:#fff; font-weight:700; }
+.muverse-app .yp-tool-pill input { accent-color:var(--lime); }
+.muverse-app .yp-tool-pill select { min-height:30px; padding:2px 5px; border:0; border-radius:999px; background:transparent; color:#fff; font-weight:700; }
+.muverse-app .yp-tool-pill option { color:#111; }
+.muverse-app .yp-volume-control,.muverse-app .yp-quality-control { display:flex; align-items:center; justify-content:space-between; gap:10px; color:var(--muted); }
+.muverse-app .yp-volume-control input { max-width:60%; }
+.muverse-app .yp-formation-tools { display:grid; width:100%; max-width:none; margin:0; gap:9px; }
+.muverse-app .yp-formation-tools small { color:var(--muted); }
+.muverse-app .yp-formation-tools button:last-of-type { background:var(--lime)!important; color:#111!important; }
+.muverse-app .yp-extra-settings { display:none; }
+@media(max-width:900px) { .muverse-app .yp-view-layout.has-formation { grid-template-columns:1fr; } }
