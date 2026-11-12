@@ -1,5 +1,5 @@
 "use client";
-// หน้าทดสอบฟีเจอร์ค้นหา + เล่นวิดีโอ + playlist (ยังไม่มีดีไซน์ ส่วนหน้าตาเป็นงานของคนที่หนึ่ง)
+// Muverse home: discovery, playback, saved collections, and practice tools.
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -335,16 +335,36 @@ export default function Page() {
   }, [mode, source?.id, current?.id, analysisRevision]);
 
   return (
-    <main>
-      <h1>
-        <Link href="/" onClick={goHome} style={{ color: "inherit", textDecoration: "none" }}>
-          Muverse
+    <main className="muverse-app">
+      <header className="site-header">
+        <Link href="/" className="brand" onClick={goHome} aria-label="Muverse home">
+          <span className="brand-mark" aria-hidden="true">M</span><span>MUVERSE</span>
         </Link>
-      </h1>
+        <nav className="site-nav" aria-label="หลัก">
+          <a href="#discover">ค้นหา</a><a href="#practice">ฝึกเต้น</a><a href="#playlists">เพลย์ลิสต์</a>
+        </nav>
+        <span className="header-note"><i /> พื้นที่ฝึกของคุณ</span>
+      </header>
+
+      {!current && <section className="welcome-panel" aria-labelledby="welcome-title">
+        <div className="welcome-copy">
+          <span className="eyebrow">YOUR DANCE SPACE</span>
+          <h1 id="welcome-title">Find your<br /><em>next move.</em></h1>
+          <p>ค้นหาคลิปที่อยากฝึก จัดเพลย์ลิสต์ แล้วเปิดเพลงซ้อมได้ในที่เดียว</p>
+          <a className="welcome-cta" href="#discover">เริ่มค้นหาคลิป <span aria-hidden="true">↘</span></a>
+        </div>
+        <div className="welcome-art" aria-hidden="true">
+          <div className="art-ring art-ring-one" /><div className="art-ring art-ring-two" />
+          <span className="art-dot art-dot-one" /><span className="art-dot art-dot-two" /><span className="art-dot art-dot-three" />
+          <span className="art-label">MOVE<br />TOGETHER</span><span className="art-stamp">PLAY<br />YOUR<br />WAY</span>
+        </div>
+      </section>}
 
       {current && (
-        <section>
-          <h2>{current.title}</h2>
+        <section id="practice" className="current-video">
+          <div className="section-heading"><div><span className="eyebrow">NOW PLAYING</span><h2>{current.title}</h2></div>
+            {source && <span className={`play-mode-pill ${mode === "random-dance" ? "is-random" : ""}`}>{mode === "random-dance" ? "↗ RANDOM DANCE" : MODE_LABEL[mode]}</span>}
+          </div>
           <p>
             <button type="button" onClick={() => addToPlaylist(current)}>+ playlist</button>{" "}
             <HeartButton liked={pl.likedIds.has(current.id)} onClick={() => pl.toggleLike(current)} />
@@ -390,9 +410,13 @@ export default function Page() {
         </section>
       )}
 
-      <WatchHistory entries={visits.entries} loaded={visits.loaded} error={visits.error}
-        activeId={current?.id} onPlay={(video) => play(video, null)} onRemove={visits.remove} onClear={visits.clear} />
+      <section className="content-section history-section">
+        <WatchHistory entries={visits.entries} loaded={visits.loaded} error={visits.error}
+          activeId={current?.id} onPlay={(video) => play(video, null)} onRemove={visits.remove} onClear={visits.clear} />
+      </section>
 
+      <section id="playlists" className="content-section playlist-section">
+      <div className="section-heading"><div><span className="eyebrow">YOUR COLLECTION</span><h2>เพลย์ลิสต์ของคุณ</h2></div><span className="section-side-note">บันทึกคลิปที่อยากฝึกไว้ที่นี่</span></div>
       <PlaylistPanel
         key={`pl-${homeKey}`}
         playlists={pl.playlists}
@@ -423,8 +447,11 @@ export default function Page() {
         onRemove={(videoId) => selected && pl.removeTrack(selected.id, videoId)}
         onMove={(index, dir) => selected && pl.moveTrack(selected.id, index, dir)}
       />
-      {mode === "random-dance" && selected && <p><small>Random Dance: พร้อมเล่น {randomDanceEligibleCount}/{selected.items.length} คลิปที่มีผลไฮไลท์และฟอร์เมชันบันทึกแล้ว · สุ่มไม่ซ้ำก่อนวนรอบใหม่</small></p>}
+      {mode === "random-dance" && selected && <p className="random-status"><span className="status-pulse" /> Random Dance: พร้อมเล่น {randomDanceEligibleCount}/{selected.items.length} คลิปที่มีผลไฮไลท์และฟอร์เมชันบันทึกแล้ว · สุ่มไม่ซ้ำก่อนวนรอบใหม่</p>}
+      </section>
 
+      <section id="discover" className="content-section discover-section">
+      <div className="section-heading"><div><span className="eyebrow">DISCOVER YOUR NEXT PRACTICE</span><h2>ค้นหาคลิปเต้น</h2></div><span className="section-side-note">ค้นหาจากชื่อเพลง ศิลปิน หรือท่าเต้น</span></div>
       <YouTubeSearch
         key={`search-${homeKey}`}
         activeId={current?.id}
@@ -433,17 +460,18 @@ export default function Page() {
         likedIds={pl.likedIds}
         onToggleLike={pl.toggleLike}
       />
+      </section>
 
       {pendingAddVideo && (
         <div
+          className="add-playlist-backdrop"
           role="presentation"
           onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingAddVideo(null); }}
-          style={{ position: "fixed", inset: 0, zIndex: 1000, display: "grid", placeItems: "center", padding: "1rem", background: "rgb(0 0 0 / 0.55)" }}
         >
-          <section role="dialog" aria-modal="true" aria-labelledby="add-playlist-title" style={{ width: "min(28rem, 100%)", display: "grid", gap: "0.8rem", padding: "1.25rem", borderRadius: "0.75rem", background: "white", color: "#171717", boxShadow: "0 12px 40px rgb(0 0 0 / 0.35)" }}>
-            <h2 id="add-playlist-title" style={{ margin: 0 }}>เลือก playlist ปลายทาง</h2>
-            <p style={{ margin: 0 }}>{pendingAddVideo.title}</p>
-            <label style={{ display: "grid", gap: "0.35rem" }}>
+          <section className="add-playlist-dialog" role="dialog" aria-modal="true" aria-labelledby="add-playlist-title">
+            <h2 id="add-playlist-title">เลือก playlist ปลายทาง</h2>
+            <p>{pendingAddVideo.title}</p>
+            <label>
               เลือก playlist ที่มีอยู่
               <select value={addDestinationId} onChange={(event) => { setAddDestinationId(event.target.value); setNewPlaylistName(""); }}>
                 <option value="">เลือก playlist</option>
@@ -458,17 +486,18 @@ export default function Page() {
               </select>
             </label>
             {addDestinationHasVideo && <small role="status">คลิปนี้อยู่ใน playlist นี้แล้ว</small>}
-            <label style={{ display: "grid", gap: "0.35rem" }}>
+            <label>
               หรือสร้าง playlist ใหม่
               <input value={newPlaylistName} onChange={(event) => { setNewPlaylistName(event.target.value); if (event.target.value) setAddDestinationId(""); }} placeholder="ชื่อ playlist ใหม่" />
             </label>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem" }}>
+            <div>
               <button type="button" onClick={() => setPendingAddVideo(null)}>ยกเลิก</button>
               <button type="button" onClick={confirmAddToPlaylist} disabled={!newPlaylistName.trim() && (!addDestinationId || addDestinationHasVideo)}>เพิ่มคลิป</button>
             </div>
           </section>
         </div>
       )}
+      <footer className="site-footer"><span className="brand-mark" aria-hidden="true">M</span><span>MUVERSE</span><small>Make space to move.</small></footer>
     </main>
   );
 }
