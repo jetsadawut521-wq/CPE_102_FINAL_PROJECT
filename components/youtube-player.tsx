@@ -731,6 +731,9 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
   }, []);
 
   const beginStageCalibration = useCallback(() => {
+    // Calibration coordinates are measured against the video frame. Leave the
+    // viewport-filling player first so letterboxing cannot shift the corners.
+    if (document.fullscreenElement) void document.exitFullscreen();
     playerRef.current?.pauseVideo();
     setFormationError(null);
     // Edit a draft only. Existing calibration and analyzed formations remain
