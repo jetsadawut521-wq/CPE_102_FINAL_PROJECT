@@ -61,7 +61,7 @@ function buildVideoText(video: VideoMetadata): string {
   return [
     `Title: ${video.title}`,
     `Tags: ${video.tags.slice(0, 20).join(", ")}`,
-    `Description: ${video.description.slice(0, 1000)}`,
+    `Description: ${video.description.slice(0, 400)}`,
   ].join("\n");
 }
 
