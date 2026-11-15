@@ -1,14 +1,7 @@
 // app/api/youtube/search/route.tshttps://github.com/jetsadawut521-wq/CPE_102_FINAL_PROJECT/blob/search_ml/app/api/youtube/search/route.ts
 // ค้นหาวิดีโอจาก YouTube Data API v3 ฝั่งเซิร์ฟเวอร์ เพื่อไม่ให้ API key รั่วไปที่เบราว์เซอร์
-import { NextRequest, NextResponse } from "next/server";
 import { classifyVideo } from "@/lib/search-category";
-import { classifyVideosWithML } from "@/lib/search/ml-classifier";
-import type {
-  VideoMetadata,
-  VideoClassification,
-  VideoCategory,
-} from "@/lib/search/types";
-
+import type { VideoCategory } from "@/lib/search/types";
 export const runtime = "nodejs";
 import type { VideoItem } from "@/lib/youtube";
 
@@ -53,7 +46,7 @@ export async function GET(req: NextRequest) {
       maxResults: "50",
       videoEmbeddable: "true", // เอาเฉพาะคลิปที่ฝังเล่นได้
       safeSearch: "moderate",
-      q,
+      q: q,
       key,
     }).toString();
 
@@ -102,31 +95,25 @@ for (const v of detailJson.items || []) {
 }
 
 const searchItems = searchJson.items || [];
+const classifications = new Map<string, VideoCategory>();
 
-const mlEnabled = process.env.MUVERSE_ML_ENABLED === "true";
+// Classify videos using the existing regex classifier.
+for (const it of searchItems) {
+  const id = it.id.videoId;
+  const details = detailById.get(id);
 
-const classifications = new Map<
-  string,
-  VideoClassification
->();
+  const category = classifyVideo(
+    decodeEntities(it.snippet.title || ""),
+    details?.snippet?.tags || [],
+    decodeEntities(
+      details?.snippet?.description ||
+      it.snippet.description ||
+      ""
+    )
+  );
 
-// ML classification
-if (mlEnabled) {
-  const metadata: VideoMetadata[] = searchItems.map((it: any) => {
-    const details = detailById.get(it.id.videoId);
-
-    return {
-      id: it.id.videoId,
-      title: decodeEntities(it.snippet.title || ""),
-      description: decodeEntities(
-        details?.snippet?.description ||
-        it.snippet.description ||
-        ""
-      ),
-      tags: details?.snippet?.tags || [],
-    };
-  });
-
+  classifications.set(id, category);
+}
   try {
     const mlResults = await classifyVideosWithML(metadata);
 
@@ -174,38 +161,22 @@ else {
 const items: VideoItem[] = searchItems
   .filter((it: any) => {
     const id = it.id.videoId;
-    const prediction = classifications.get(id);
+    const category = classifications.get(id);
 
-    if (!embeddable.has(id) || !prediction) {
-      return false;
-    }
-
-    // ML determines relevance when enabled.
-    if (mlEnabled && !prediction.relevant) {
+    if (!embeddable.has(id) || !category) {
       return false;
     }
 
     // Apply the requested category filter.
-    if (mode !== "all" && prediction.category !== mode) {
+    if (mode !== "all" && category !== mode) {
       return false;
     }
 
     return true;
-  }).sort((a: any, b: any) => {
-  if (!mlEnabled) return 0;
-
-  const scoreA =
-    classifications.get(a.id.videoId)?.relevanceScore ?? 0;
-
-  const scoreB =
-    classifications.get(b.id.videoId)?.relevanceScore ?? 0;
-
-  return scoreB - scoreA;
-})
+  })
   .slice(0, 12)
   .map((it: any) => {
     const id = it.id.videoId;
-    const prediction = classifications.get(id)!;
 
     return {
       id,
@@ -216,7 +187,7 @@ const items: VideoItem[] = searchItems
         it.snippet.thumbnails.default?.url ||
         "",
       durationSec: durations.get(id) || 0,
-      category: prediction.category,
+      category: classifications.get(id)!,
     };
   });
 
