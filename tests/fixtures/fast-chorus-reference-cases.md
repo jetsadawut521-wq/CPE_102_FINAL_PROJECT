@@ -1,40 +1,22 @@
-# BLACKPINK chorus reference cases
+# กรณีอ้างอิงท่อนฮุค BLACKPINK
 
-These annotations are test data, not production timing overrides. The user
-explicitly confirmed both intervals as the desired first chorus:
+ข้อมูลกำกับต่อไปนี้ใช้เป็น fixture สำหรับทดสอบ ไม่ใช่ค่าบังคับเวลาในระบบจริง ผู้ใช้ยืนยันว่าช่วงเหล่านี้คือท่อนฮุคแรกที่ต้องการ:
 
-| Official video ID | Reference | Captured lyric API guess | Revised audio candidate |
+| รหัสวิดีโอทางการ | ช่วงอ้างอิง | ช่วงที่เนื้อเพลง API เสนอ | ช่วงเสียงที่ปรับปรุงแล้ว |
 | --- | --- | --- | --- |
-| bqzDuRz_P7g | 66–96 s | 75–91 s | 66–96.25 s |
-| ivoS3HUJB3Q | 84–116 s | 56–81 s | 84–115.75 s |
+| `bqzDuRz_P7g` | 66–96 วินาที | 75–91 วินาที | 66–96.25 วินาที |
+| `ivoS3HUJB3Q` | 84–116 วินาที | 56–81 วินาที | 84–115.75 วินาที |
 
-The full uploaded WebM recordings were decoded and analyzed during development.
-Offline decoding + detection took approximately 0.9–1.1 seconds on the cloud
-executor. This is not a measurement of YouTube download, queue or browser latency
-on the user's PC. Only the annotated occurrence is asserted; later chorus
-occurrences have no human-verified labels here.
+ไฟล์บันทึก WebM ที่ผู้ใช้อัปโหลดถูกถอดรหัสและวิเคราะห์ระหว่างพัฒนา การถอดรหัสและตรวจจับแบบ offline ใช้เวลาประมาณ 0.9–1.1 วินาทีบนเครื่องประมวลผลทดสอบ ตัวเลขนี้ไม่รวมการดาวน์โหลด YouTube คิว หรือเวลาในเบราว์เซอร์ของผู้ใช้ ยืนยันเฉพาะท่อนที่ระบุไว้ ไม่มีป้ายกำกับที่ผู้ใช้ตรวจสอบสำหรับท่อนฮุคครั้งถัดไป
 
-The `.npz` fixtures contain derived chroma, timbre, RMS energy and activity
-features at a 0.25-second step, plus duration. They contain no original audio,
-lyrics, artist-specific detection rules or model weights. Tests rerun the
-production recurrence and boundary selection against these features. Synthetic
-WAV tests separately exercise decoding and feature extraction.
+ไฟล์ fixture `.npz` เก็บเฉพาะคุณลักษณะที่คำนวณแล้ว ได้แก่ chroma, timbre, พลังงาน RMS, สถานะกิจกรรมเสียง ที่ความละเอียด 0.25 วินาที รวมถึงความยาวคลิป โดยไม่มีเสียงต้นฉบับ เนื้อเพลง กฎตรวจจับเฉพาะศิลปิน หรือน้ำหนักโมเดล การทดสอบเรียกการค้นหารูปแบบซ้ำและการเลือกขอบเขตจาก production code แยกจากการทดสอบ WAV สังเคราะห์ที่ตรวจการถอดรหัสและสกัดคุณลักษณะ
 
-To regenerate features from a local recording, use `fast_analysis.decode()` and
-`fast_analysis.features()`, then save c, t, energy, active, duration and step with
-`numpy.savez_compressed`. The production detector must never load these fixtures.
+หากต้องสร้างคุณลักษณะจากไฟล์เสียงในเครื่อง ให้ใช้ `fast_analysis.decode()` และ `fast_analysis.features()` แล้วบันทึก `c`, `t`, `energy`, `active`, `duration` และ `step` ด้วย `numpy.savez_compressed` ระบบ production ต้องไม่โหลด fixtures เหล่านี้
 
-The browser regression uses the captured lyric ranges and actual measured audio
-ranges, delaying the audio response to reproduce the source-order bug. A lyric
-result must not lock the UI while bounded fast audio analysis is still pending.
-After the first selected result is displayed, the existing snapshot protection
-continues to prevent late results from silently moving its boundaries.
+การทดสอบ regression ฝั่งเว็บใช้ช่วงเนื้อเพลงที่บันทึกไว้และผลวิเคราะห์เสียงจริง โดยหน่วงการตอบกลับเสียงเพื่อจำลองปัญหาลำดับแหล่งข้อมูล ผลเนื้อเพลงต้องไม่ล็อกหน้าจอขณะรอผลวิเคราะห์เสียงโหมดเร็ว เมื่อแสดงผลชุดแรกแล้ว ระบบป้องกันไม่ให้ผลที่มาทีหลังย้ายขอบเขตโดยไม่ตั้งใจ
 
-## SEVENTEEN comment reaction regression
+## Regression: ความเห็นเกี่ยวกับท่อนของ SEVENTEEN
 
-`comment-reaction-reference.json` stores only the relevant short timestamped
-reaction line, not the surrounding long comment. The user confirmed first chorus
-58–79 s and uploaded the matching recording. The derived fixture
-`fast-chorus-aJ55DJE4Os4-features.npz` produces 58.5–79.25 s after refinement.
-The data is not a per-song timing override. Only the supplied first occurrence is
-verified; later repeats have no human-verified reference here.
+`comment-reaction-reference.json` เก็บเฉพาะข้อความความเห็นสั้นที่มี timestamp ไม่เก็บคอมเมนต์ยาวโดยรอบ ผู้ใช้ยืนยันว่าท่อนฮุคแรกอยู่ที่ 58–79 วินาทีและอัปโหลดเสียงที่ตรงกัน fixture `fast-chorus-aJ55DJE4Os4-features.npz` ให้ผล 58.5–79.25 วินาทีหลังปรับขอบ
+
+ข้อมูลนี้ไม่ใช่การกำหนดเวลาเฉพาะเพลง ยืนยันเฉพาะท่อนแรกที่ระบุ ไม่มีช่วงอ้างอิงจากผู้ใช้สำหรับท่อนหลัง
