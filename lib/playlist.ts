@@ -9,19 +9,31 @@ export interface Playlist {
   id: string;
   name: string;
   items: VideoItem[];
+  icon?: string;
+  color?: string;
+  visibility?: "private" | "public";
   /** รูปปกที่ผู้ใช้ตั้งเอง (data URL) ถ้าไม่มีจะใช้ปกสุ่มจากคลิปใน playlist */
   cover?: string;
 }
+
+export const DEFAULT_PLAYLIST_ICON = "✦";
+export const DEFAULT_PLAYLIST_COLOR = "#ff7738";
+export const DEFAULT_LIKED_COLOR = "#c9f45b";
 
 const STORAGE_KEY = "muverse:playlists";
 
 /** วิธีเล่น: เรียงตามลำดับที่นำเข้า (วนซ้ำ) / สุ่ม (วนซ้ำ ไม่ซ้ำจนกว่าจะครบทุกเพลง) / วนซ้ำคลิปเดียว */
 export type PlayMode = "sequential" | "shuffle" | "single" | "random-dance";
 
-/** playlist พิเศษ “ถูกใจ”: กดหัวใจที่คลิปไหนก็เข้ามาอยู่ที่นี่ทันที มีเสมอ ลบ/เปลี่ยนชื่อไม่ได้ */
+/** Special Liked clips playlist: liked videos are saved here automatically. */
 export const LIKED_ID = "liked";
 export const isLikedId = (id: string | null | undefined) => id === LIKED_ID;
-const emptyLiked = (): Playlist => ({ id: LIKED_ID, name: "ถูกใจ", items: [] });
+const emptyLiked = (): Playlist => ({ id: LIKED_ID, name: "Liked clips", items: [], color: DEFAULT_LIKED_COLOR });
+
+function randomCoverFrom(items: VideoItem[]): string | undefined {
+  const covers = items.map((video) => video.thumbnail).filter((thumbnail): thumbnail is string => !!thumbnail);
+  return covers.length ? covers[Math.floor(Math.random() * covers.length)] : undefined;
+}
 
 function newId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `pl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -48,10 +60,16 @@ export function usePlaylists() {
       if (raw) {
         const parsed: unknown = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          const all = parsed.filter(isPlaylist).map((p) => ({ ...p, items: p.items.filter(isVideo) }));
-          // ข้อมูลเก่าที่ยังไม่มี “ถูกใจ” จะถูกเติมให้ และ “ถูกใจ” อยู่หน้าสุดเสมอ
+          const all = parsed.filter(isPlaylist).map((p) => ({
+            ...p,
+            items: p.items.filter(isVideo),
+            ...(p.id === LIKED_ID
+              ? { color: p.color ?? DEFAULT_LIKED_COLOR }
+              : { icon: p.icon ?? DEFAULT_PLAYLIST_ICON, color: p.color ?? DEFAULT_PLAYLIST_COLOR }),
+          }));
+          // Keep the liked collection at the front and normalize its display name.
           const liked = all.find((p) => p.id === LIKED_ID) ?? emptyLiked();
-          setPlaylists([{ ...liked, name: "ถูกใจ" }, ...all.filter((p) => p.id !== LIKED_ID)]);
+          setPlaylists([{ ...liked, name: "Liked clips", color: liked.color ?? DEFAULT_LIKED_COLOR, cover: liked.cover ?? randomCoverFrom(liked.items) }, ...all.filter((p) => p.id !== LIKED_ID)]);
         }
       }
     } catch {
@@ -70,9 +88,9 @@ export function usePlaylists() {
     }
   }, [playlists, loaded]);
 
-  const createPlaylist = useCallback((name: string): string => {
+  const createPlaylist = useCallback((name: string, options: { icon?: string; color?: string; visibility?: "private" | "public" } = {}): string => {
     const id = newId();
-    setPlaylists((prev) => [...prev, { id, name: name.trim() || `Playlist ${prev.length}`, items: [] }]); // prev.length นับ “ถูกใจ” อยู่แล้ว จึงไม่ต้อง +1
+    setPlaylists((prev) => [...prev, { id, name: name.trim() || `Playlist ${prev.length}`, items: [], icon: options.icon ?? DEFAULT_PLAYLIST_ICON, color: options.color ?? DEFAULT_PLAYLIST_COLOR, visibility: options.visibility ?? "private" }]); // prev.length นับ “ถูกใจ” อยู่แล้ว จึงไม่ต้อง +1
     return id;
   }, []);
 
@@ -83,8 +101,15 @@ export function usePlaylists() {
   }, []);
 
   const setCover = useCallback((id: string, cover?: string) => {
-    if (id === LIKED_ID) return; // “ถูกใจ” ใช้ปกหัวใจประจำ
-    setPlaylists((prev) => prev.map((p) => (p.id === id ? { ...p, cover } : p)));
+    setPlaylists((prev) => prev.map((p) => {
+      if (p.id !== id) return p;
+      return { ...p, cover: cover ?? (id === LIKED_ID ? randomCoverFrom(p.items) : undefined) };
+    }));
+  }, []);
+
+  const setAppearance = useCallback((id: string, appearance: { icon?: string; color?: string }) => {
+    if (id === LIKED_ID && appearance.icon) return;
+    setPlaylists((prev) => prev.map((p) => (p.id === id ? { ...p, ...appearance } : p)));
   }, []);
 
   const deletePlaylist = useCallback((id: string) => {
@@ -124,9 +149,9 @@ export function usePlaylists() {
     setPlaylists((prev) =>
       prev.map((p) => {
         if (p.id !== LIKED_ID) return p;
-        return p.items.some((v) => v.id === video.id)
-          ? { ...p, items: p.items.filter((v) => v.id !== video.id) }
-          : { ...p, items: [...p.items, video] };
+        if (p.items.some((v) => v.id === video.id)) return { ...p, items: p.items.filter((v) => v.id !== video.id) };
+        const items = [...p.items, video];
+        return { ...p, items, ...(p.id === LIKED_ID && !p.cover ? { cover: randomCoverFrom(items) } : {}) };
       }),
     );
   }, []);
@@ -142,6 +167,7 @@ export function usePlaylists() {
     createPlaylist,
     renamePlaylist,
     setCover,
+    setAppearance,
     deletePlaylist,
     addTrack,
     removeTrack,

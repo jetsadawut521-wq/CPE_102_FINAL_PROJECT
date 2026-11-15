@@ -1,4 +1,5 @@
 import type { AutoSegment } from "@/lib/highlight-analysis";
+import recommendedSeed from "@/data/recommended-playlists.json";
 
 export interface FormationPoint {
   x: number;
@@ -16,6 +17,10 @@ export interface FormationSnapshot {
 const HIGHLIGHT_KEY = "muverse:analyzed-highlights:v1";
 const FORMATION_KEY = "muverse:saved-formations:v1";
 const CALIBRATION_KEY = "muverse:stage-calibration:v1";
+const bundledAnalysis = recommendedSeed as {
+  highlights: Record<string, { segments: AutoSegment[]; manuallyEdited?: boolean }>;
+  formations: Record<string, { formations: FormationSnapshot[] }>;
+};
 
 function readMap<T>(key: string): Record<string, T> {
   try {
@@ -34,7 +39,8 @@ function writeMap<T>(key: string, map: Record<string, T>) {
 }
 
 export function readSavedHighlights(videoId: string): AutoSegment[] | null {
-  const value = readMap<{ segments?: AutoSegment[] }>(HIGHLIGHT_KEY)[videoId];
+  const saved = readMap<{ segments?: AutoSegment[] }>(HIGHLIGHT_KEY);
+  const value = Object.prototype.hasOwnProperty.call(saved, videoId) ? saved[videoId] : bundledAnalysis.highlights[videoId];
   return value && Array.isArray(value.segments) ? value.segments : null;
 }
 
@@ -45,7 +51,9 @@ export function saveAnalyzedHighlights(videoId: string, segments: AutoSegment[])
 }
 
 export function hasEditedHighlights(videoId: string): boolean {
-  return readMap<{ manuallyEdited?: boolean }>(HIGHLIGHT_KEY)[videoId]?.manuallyEdited === true;
+  const saved = readMap<{ manuallyEdited?: boolean }>(HIGHLIGHT_KEY);
+  const value = Object.prototype.hasOwnProperty.call(saved, videoId) ? saved[videoId] : bundledAnalysis.highlights[videoId];
+  return value?.manuallyEdited === true;
 }
 
 export function saveEditedHighlights(videoId: string, segments: AutoSegment[]) {
@@ -55,7 +63,8 @@ export function saveEditedHighlights(videoId: string, segments: AutoSegment[]) {
 }
 
 export function readSavedFormations(videoId: string): FormationSnapshot[] | null {
-  const value = readMap<{ formations?: FormationSnapshot[] }>(FORMATION_KEY)[videoId];
+  const saved = readMap<{ formations?: FormationSnapshot[] }>(FORMATION_KEY);
+  const value = Object.prototype.hasOwnProperty.call(saved, videoId) ? saved[videoId] : bundledAnalysis.formations[videoId];
   if (!value || !Array.isArray(value.formations)) return null;
   return value.formations.filter((entry) => Number.isFinite(entry?.time) && Array.isArray(entry.points) &&
     entry.points.every((point) => Number.isFinite(point?.x) && Number.isFinite(point?.y) &&
@@ -83,9 +92,17 @@ export function saveStageCalibration(videoId: string, corners: StageCorner[]) {
 }
 
 export function removeVideoAnalysis(videoId: string) {
-  for (const key of [HIGHLIGHT_KEY, FORMATION_KEY, CALIBRATION_KEY]) {
-    const map = readMap<unknown>(key);
-    delete map[videoId];
-    writeMap(key, map);
-  }
+  const highlights = readMap<{ segments: AutoSegment[]; savedAt: number; manuallyEdited?: boolean }>(HIGHLIGHT_KEY);
+  if (bundledAnalysis.highlights[videoId]) highlights[videoId] = { segments: [], savedAt: Date.now(), manuallyEdited: true };
+  else delete highlights[videoId];
+  writeMap(HIGHLIGHT_KEY, highlights);
+
+  const formations = readMap<{ formations: FormationSnapshot[]; savedAt: number }>(FORMATION_KEY);
+  if (bundledAnalysis.formations[videoId]) formations[videoId] = { formations: [], savedAt: Date.now() };
+  else delete formations[videoId];
+  writeMap(FORMATION_KEY, formations);
+
+  const calibrations = readMap<unknown>(CALIBRATION_KEY);
+  delete calibrations[videoId];
+  writeMap(CALIBRATION_KEY, calibrations);
 }

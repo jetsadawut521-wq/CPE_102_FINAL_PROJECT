@@ -4,7 +4,7 @@
 // เล่น/หยุด, Seekbar, แตะสองครั้งข้าม/ย้อน 10 วิ, ปรับเสียง (จำค่าไว้), กลับด้านซ้าย-ขวา,
 // คีย์ลัด (Space / ← → / ↑ ↓), เต็มจอ
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { YT_STATE, formatTime, loadYouTubeApi, type YTEvent, type YTPlayer } from "@/lib/youtube";
 import type { AutoSegment } from "@/lib/highlight-analysis";
 import { readSavedFormations, readStageCalibration, saveFormations, saveStageCalibration,
@@ -12,6 +12,7 @@ import { readSavedFormations, readStageCalibration, saveFormations, saveStageCal
 import "./youtube-player.css";
 
 interface Props {
+  language?: string;
   videoId: string;
   showAnalysisTools?: boolean;
   autoPlay?: boolean;
@@ -20,11 +21,17 @@ interface Props {
   loopOne?: boolean; // เล่นคลิปนี้ซ้ำไปเรื่อย ๆ: จบแล้วเริ่มใหม่เองและไม่เรียก onEnded
   highlights?: AutoSegment[]; // ท่อนยอดนิยมที่ระบบวิเคราะห์ให้ แสดงบนแถบกรอ (ว่าง = ไม่แสดง)
   onHighlightsChange?: (segments: AutoSegment[]) => void;
+  enableFocusRange?: boolean; // อนุญาตให้โหมด Random Dance ข้าม/หยุดตามช่วงที่กำหนด
   focusRange?: { start: number; end: number; key: string };
   onFocusRangeEnd?: () => void;
+  videoInfo?: ReactNode;
+  videoFooter?: ReactNode;
 }
 
 const NO_HIGHLIGHTS: AutoSegment[] = [];
+const WAVEFORM_BARS = Array.from({ length: 64 }, (_, index) =>
+  Math.round(20 + Math.abs(Math.sin(index * 1.37) * Math.sin(index * 0.21 + 1)) * 76),
+);
 
 const SKIP_SECONDS = 10; // แตะสองครั้งบนจอ
 const KEY_SKIP_SECONDS = 5; // ปุ่มลูกศรซ้าย/ขวา
@@ -34,21 +41,7 @@ const DOUBLE_TAP_MS = 280;
 const IDLE_MS = 3000; // ไม่ขยับเมาส์นานเท่านี้ตอนเต็มจอ → ซ่อนทุกอย่างบนจอ
 const VOLUME_KEY = "muverse:volume";
 const RATE_KEY = "muverse:rate";
-const QUALITY_KEY = "muverse:quality";
 const RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
-const QUALITY_LABELS: Record<string, string> = {
-  auto: "อัตโนมัติ",
-  highres: "สูงกว่า 4K",
-  hd2880: "2880p",
-  hd2160: "2160p (4K)",
-  hd1440: "1440p",
-  hd1080: "1080p",
-  hd720: "720p",
-  large: "480p",
-  medium: "360p",
-  small: "240p",
-  tiny: "144p",
-};
 
 // YouTube อาจคืนค่า undefined/NaN ก่อนวิดีโอโหลดเสร็จ จึงแปลงเป็น 0 เสมอ
 const safe = (n: unknown): number => (typeof n === "number" && Number.isFinite(n) ? n : 0);
@@ -66,6 +59,8 @@ function isTextEntry(el: EventTarget | null): boolean {
 }
 
 type FlashState = { text: string; pos: "left" | "right" | "center" };
+type HighlightDrag = { index: number; pointerId: number; edge: "start" | "end" | "move"; originX: number; start: number; end: number };
+type HighlightRange = { index: number; start: number; end: number };
 type FormationPoint = Omit<SavedFormationPoint, "color"> & { color: string };
 type FormationSnapshot = SavedFormationSnapshot;
 type StageCorner = SavedStageCorner;
@@ -75,9 +70,16 @@ const DEFAULT_CALIBRATION: StageCorner[] = [
   { x: 0.82, y: 0.82 }, { x: 0.18, y: 0.82 },
 ];
 
-export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoPlay = true, onEnded, onError, loopOne = false, highlights = NO_HIGHLIGHTS,
-  onHighlightsChange, focusRange, onFocusRangeEnd }: Props) {
+export default function YouTubePlayer({ language = "English", videoId, showAnalysisTools = true, autoPlay = true, onEnded, onError, loopOne = false, highlights = NO_HIGHLIGHTS,
+  onHighlightsChange, enableFocusRange = false, focusRange, onFocusRangeEnd, videoInfo, videoFooter }: Props) {
+  const th = language === "ไทย";
+  const tr = (english: string, thai: string) => th ? thai : english;
+  const languageRef = useRef(language);
+  useEffect(() => { languageRef.current = language; }, [language]);
   const rootRef = useRef<HTMLDivElement>(null);
+  const waveformTrackRef = useRef<HTMLDivElement>(null);
+  const highlightDragRef = useRef<HighlightDrag | null>(null);
+  const highlightRangeRef = useRef<HighlightRange | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<YTPlayer | null>(null);
   const videoIdRef = useRef(videoId);
@@ -89,18 +91,20 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
   const loopHlRef = useRef(false);
   const [activeHl, setActiveHl] = useState<number | null>(null); // ท่อนที่ผู้ใช้เลือกอยู่
   const [loopHl, setLoopHl] = useState(false); // วนซ้ำเฉพาะท่อนที่เลือก
+  const [highlightRangePreview, setHighlightRangePreview] = useState<HighlightRange | null>(null);
+  const [showPracticePanel, setShowPracticePanel] = useState(true);
 
   const onErrorRef = useRef(onError);
   const playingRef = useRef(false);
   const focusEndRef = useRef(onFocusRangeEnd);
   const focusRangeRef = useRef(focusRange);
+  // Keep the active range in sync during render so a stale Random Dance range
+  // cannot pause a clip after the parent has left that mode.
+  focusRangeRef.current = enableFocusRange ? focusRange : undefined;
   const focusEndHandledRef = useRef(false);
   const loadedFocusKeyRef = useRef("");
   const countdownAudioRef = useRef<AudioContext | null>(null);
   const rateRef = useRef(1);
-  const qualityRef = useRef("auto");
-  const pauseAfterLoadRef = useRef(false); // เปลี่ยนความละเอียดตอนหยุดอยู่ → โหลดใหม่แล้วหยุดต่อ
-  const qualityTimer = useRef<number | undefined>(undefined);
   const volumeRef = useRef(DEFAULT_VOLUME); // ค่าเสียงล่าสุด ใช้ได้ใน callback ของ YouTube โดยไม่ติดค่าเก่า
   const lastTap = useRef<{ side: "left" | "right"; at: number; timer?: number } | null>(null);
   const flashTimer = useRef<number | undefined>(undefined);
@@ -151,9 +155,6 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
   const [flash, setFlash] = useState<FlashState | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [rate, setRate] = useState(1);
-  const [quality, setQuality] = useState("auto");
-  const [qualityLevels, setQualityLevels] = useState<string[]>([]);
-  const [qualityNote, setQualityNote] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [idle, setIdle] = useState(false);
   const idleTimer = useRef<number | undefined>(undefined);
@@ -177,7 +178,6 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
     onErrorRef.current = onError;
     loopOneRef.current = loopOne;
     focusEndRef.current = onFocusRangeEnd;
-    focusRangeRef.current = focusRange;
     hlRef.current = highlights;
     activeHlRef.current = activeHl;
     loopHlRef.current = loopHl;
@@ -189,7 +189,15 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
     activeHlRef.current = null;
     loopHlRef.current = false;
     setLoopHl(false);
-  }, [videoId, highlights]);
+    highlightDragRef.current = null;
+    highlightRangeRef.current = null;
+    setHighlightRangePreview(null);
+  }, [videoId]);
+
+  useEffect(() => {
+    if (activeHl === null && highlights.length > 0) setActiveHl(0);
+    else if (activeHl !== null && activeHl >= highlights.length) setActiveHl(highlights.length ? highlights.length - 1 : null);
+  }, [activeHl, highlights]);
 
   useEffect(() => {
     setFormationPoints([]);
@@ -261,12 +269,6 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
     playerRef.current?.setPlaybackRate(rateRef.current);
   }, []);
 
-  // ดึงรายการความละเอียดที่คลิปนี้มีให้เลือก (รู้ได้หลังคลิปเริ่มเล่น)
-  const refreshQualityLevels = useCallback(() => {
-    const levels = playerRef.current?.getAvailableQualityLevels?.() ?? [];
-    setQualityLevels(levels.filter((l) => l !== "auto"));
-  }, []);
-
   // อ่านค่าเสียงที่เคยตั้งไว้ (จำข้ามคลิปและข้ามการรีเฟรชหน้า)
   useEffect(() => {
     try {
@@ -281,11 +283,6 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
       if (RATES.includes(savedRate)) {
         rateRef.current = savedRate;
         setRate(savedRate);
-      }
-      const savedQuality = window.localStorage.getItem(QUALITY_KEY);
-      if (savedQuality && savedQuality in QUALITY_LABELS) {
-        qualityRef.current = savedQuality;
-        setQuality(savedQuality);
       }
     } catch {
       /* localStorage ใช้ไม่ได้ (เช่น โหมดส่วนตัว) ก็ใช้ค่าในหน่วยความจำต่อไป */
@@ -320,39 +317,6 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
     },
     [applyRate],
   );
-
-  // เปลี่ยนความละเอียด: YouTube เลิกรับประกันคำสั่ง setPlaybackQuality แล้ว
-  // จึงโหลดคลิปเดิมใหม่ที่เวลาเดิมพร้อม suggestedQuality แล้วตรวจว่า YouTube ยอมทำตามหรือไม่
-  const changeQuality = useCallback((next: string) => {
-    const p = playerRef.current;
-    qualityRef.current = next;
-    setQuality(next);
-    setQualityNote(null);
-    try {
-      window.localStorage.setItem(QUALITY_KEY, next);
-    } catch {
-      /* ignore */
-    }
-    const id = loadedIdRef.current;
-    if (!p || !id) return;
-    const at = safe(p.getCurrentTime());
-    pauseAfterLoadRef.current = !playingRef.current;
-    p.setPlaybackQuality(next);
-    p.loadVideoById({
-      videoId: id,
-      startSeconds: at,
-      suggestedQuality: next === "auto" ? undefined : next,
-    });
-    window.clearTimeout(qualityTimer.current);
-    if (next !== "auto") {
-      qualityTimer.current = window.setTimeout(() => {
-        const actual = playerRef.current?.getPlaybackQuality?.();
-        if (actual && actual !== next) {
-          setQualityNote(`YouTube เลือก ${QUALITY_LABELS[actual] ?? actual} ให้แทน (เน็ตหรือคลิปอาจไม่รองรับ)`);
-        }
-      }, 3000);
-    }
-  }, []);
 
   // สร้างเครื่องเล่นครั้งเดียว
   useEffect(() => {
@@ -399,11 +363,6 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
                 applyVolume();
                 applyRate();
                 hideCaptions();
-                refreshQualityLevels();
-                if (pauseAfterLoadRef.current) {
-                  pauseAfterLoadRef.current = false;
-                  playerRef.current?.pauseVideo();
-                }
               }
               if (e.data === YT_STATE.ENDED) {
                 if (loopOneRef.current) {
@@ -418,11 +377,11 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
             onError: (e: YTEvent) => {
               onErrorRef.current?.(e.data);
               if (e.data === 101 || e.data === 150) {
-                setError("เจ้าของคลิปไม่อนุญาตให้เล่นนอก YouTube ลองเลือกคลิปอื่น");
+                setError(languageRef.current === "ไทย" ? "เจ้าของคลิปไม่อนุญาตให้เล่นนอก YouTube ลองเลือกคลิปอื่น" : "The video owner does not allow playback outside YouTube. Try another video.");
               } else if (e.data === 153) {
-                setError("เบราว์เซอร์นี้ไม่ส่งข้อมูลต้นทางให้ YouTube ลองเปิดหน้านี้ใน Chrome หรือ Edge โดยตรง");
+                setError(languageRef.current === "ไทย" ? "เบราว์เซอร์นี้ไม่ส่งข้อมูลต้นทางให้ YouTube ลองเปิดหน้านี้ใน Chrome หรือ Edge โดยตรง" : "This browser did not provide origin information to YouTube. Try opening this page directly in Chrome or Edge.");
               } else {
-                setError(`เล่นคลิปนี้ไม่ได้ (รหัส ${e.data}) ลองเลือกคลิปอื่น`);
+                setError(languageRef.current === "ไทย" ? `เล่นคลิปนี้ไม่ได้ (รหัส ${e.data}) ลองเลือกคลิปอื่น` : `This video cannot be played (error ${e.data}). Try another video.`);
               }
             },
           },
@@ -453,17 +412,22 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
     playerRef.current.loadVideoById({
       videoId,
       startSeconds,
-      suggestedQuality: qualityRef.current === "auto" ? undefined : qualityRef.current,
     });
     applyVolume();
     applyRate();
     hideCaptions();
   }, [videoId, ready, applyVolume, applyRate, hideCaptions]);
 
-  const focusRangeKey = focusRange ? `${focusRange.key}:${focusRange.start}:${focusRange.end}` : "";
+  const focusRangeKey = enableFocusRange && focusRange ? `${focusRange.key}:${focusRange.start}:${focusRange.end}` : "";
+  useEffect(() => {
+    if (focusRangeKey) return;
+    focusEndHandledRef.current = false;
+    setFocusCountdown(null);
+  }, [focusRangeKey]);
+
   useEffect(() => {
     const range = focusRangeRef.current;
-    if (!ready || !range || loadedFocusKeyRef.current === focusRangeKey) return;
+    if (!ready || !enableFocusRange || !range || loadedFocusKeyRef.current === focusRangeKey) return;
     loadedFocusKeyRef.current = focusRangeKey;
     focusEndHandledRef.current = false;
     setTime(range.start);
@@ -473,13 +437,12 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
       player?.loadVideoById({
         videoId: videoIdRef.current,
         startSeconds: range.start,
-        suggestedQuality: qualityRef.current === "auto" ? undefined : qualityRef.current,
-      });
+        });
     } else {
       player?.seekTo(range.start, true);
     }
     player?.playVideo();
-  }, [focusRangeKey, ready]);
+  }, [focusRangeKey, ready, enableFocusRange]);
 
   // อัปเดตเวลาของ Seekbar ทุก 250ms
   useEffect(() => {
@@ -529,13 +492,70 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
     p.playVideo();
   };
 
+  const beginHighlightDrag = (event: ReactPointerEvent<HTMLElement>, index: number, edge: HighlightDrag["edge"]) => {
+    if (event.button !== 0 || !duration) return;
+    const segment = highlights[index];
+    if (!segment) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setActiveHl(index);
+    const range = highlightRangePreview?.index === index ? highlightRangePreview : { index, start: segment.start, end: segment.end };
+    highlightDragRef.current = { index, pointerId: event.pointerId, edge, originX: event.clientX, start: range.start, end: range.end };
+    highlightRangeRef.current = range;
+    setHighlightRangePreview(range);
+    try { waveformTrackRef.current?.setPointerCapture(event.pointerId); } catch { /* pointer capture may be unavailable in embedded browsers */ }
+  };
+
+  const moveHighlightDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = highlightDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || !duration) return;
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const innerWidth = Math.max(1, rect.width - 28);
+    const delta = ((event.clientX - drag.originX) / innerWidth) * duration;
+    const minGap = Math.min(0.5, duration);
+    let start = drag.start;
+    let end = drag.end;
+    if (drag.edge === "move") {
+      const length = end - start;
+      start = Math.min(Math.max(0, drag.start + delta), Math.max(0, duration - length));
+      end = start + length;
+    } else if (drag.edge === "start") {
+      start = Math.min(Math.max(0, drag.start + delta), Math.max(0, drag.end - minGap));
+    } else {
+      end = Math.max(Math.min(duration, drag.end + delta), Math.min(duration, drag.start + minGap));
+    }
+    const range = { index: drag.index, start, end };
+    highlightRangeRef.current = range;
+    setHighlightRangePreview(range);
+  };
+
+  const finishHighlightDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = highlightDragRef.current;
+    const range = highlightRangeRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    highlightDragRef.current = null;
+    highlightRangeRef.current = null;
+    setHighlightRangePreview(null);
+    if (!range || (Math.abs(range.start - highlights[drag.index]?.start) < 0.05 && Math.abs(range.end - highlights[drag.index]?.end) < 0.05)) return;
+    onHighlightsChange?.(highlights.map((segment, index) => index === drag.index ? { ...segment, start: range.start, end: range.end } : segment));
+    setActiveHl(drag.index);
+  };
+
+  const cancelHighlightDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (highlightDragRef.current?.pointerId !== event.pointerId) return;
+    highlightDragRef.current = null;
+    highlightRangeRef.current = null;
+    setHighlightRangePreview(null);
+  };
+
   const togglePlay = useCallback(() => {
     const p = playerRef.current;
     if (!p) return;
     if (playing) p.pauseVideo();
     else p.playVideo();
-    showFlash(playing ? "⏸ หยุด" : "▶ เล่น", "center");
-  }, [playing, showFlash]);
+    showFlash(playing ? tr("⏸ Pause", "⏸ หยุด") : tr("▶ Play", "▶ เล่น"), "center");
+  }, [playing, showFlash, language]);
 
   const skip = useCallback(
     (delta: number) => {
@@ -545,9 +565,9 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
       const next = Math.min(Math.max(safe(p.getCurrentTime()) + delta, 0), max);
       p.seekTo(next, true);
       setTime(next);
-      showFlash(`${delta < 0 ? "−" : "+"}${Math.abs(delta)} วิ`, delta < 0 ? "left" : "right");
+      showFlash(`${delta < 0 ? "−" : "+"}${Math.abs(delta)} ${tr("sec", "วิ")}`, delta < 0 ? "left" : "right");
     },
-    [showFlash],
+    [showFlash, language],
   );
 
   // ---- เต็มจอ ----
@@ -632,12 +652,12 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
         case "ArrowUp":
           e.preventDefault();
           changeVolume(volumeRef.current + VOLUME_STEP);
-          showFlash(`เสียง ${volumeRef.current}%`, "center");
+          showFlash(`${tr("Volume", "เสียง")} ${volumeRef.current}%`, "center");
           break;
         case "ArrowDown":
           e.preventDefault();
           changeVolume(volumeRef.current - VOLUME_STEP);
-          showFlash(`เสียง ${volumeRef.current}%`, "center");
+          showFlash(`${tr("Volume", "เสียง")} ${volumeRef.current}%`, "center");
           break;
       }
     };
@@ -653,7 +673,7 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [ready, togglePlay, skip, changeVolume, showFlash]);
+  }, [ready, togglePlay, skip, changeVolume, showFlash, language]);
 
   // แตะครั้งเดียว = เล่น/หยุด, แตะสองครั้ง = ข้าม/ย้อน 10 วิ (ขวา = ข้าม, ซ้าย = ย้อน)
   const handleTap = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -787,7 +807,7 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
 
   const startFormationAnalysis = useCallback(async () => {
     if (stageCorners.length !== 4) {
-      setFormationError("ตั้งค่ามุมพื้นเวทีให้ครบ 4 จุดก่อน");
+      setFormationError(tr("Set all 4 floor corners first.", "ตั้งค่ามุมพื้นเวทีให้ครบ 4 จุดก่อน"));
       return;
     }
     formationAbortRef.current?.abort();
@@ -807,10 +827,10 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
           body: JSON.stringify({ stageCorners }),
         });
         result = await response.json();
-        if (!response.ok && response.status !== 429) throw new Error("ติดต่อระบบวิเคราะห์คลิปไม่ได้");
+        if (!response.ok && response.status !== 429) throw new Error(tr("Could not reach the video analysis service.", "ติดต่อระบบวิเคราะห์คลิปไม่ได้"));
         setFormationStage(result.stage ?? null);
         if (result.status === "processing" || result.status === "queued") setFormationStatus("running");
-        if (result.status === "busy") throw new Error("มีคลิปอื่นกำลังวิเคราะห์อยู่ ลองอีกครั้งภายหลัง");
+        if (result.status === "busy") throw new Error(tr("Another video is being analyzed. Try again later.", "มีคลิปอื่นกำลังวิเคราะห์อยู่ ลองอีกครั้งภายหลัง"));
         if (["processing", "queued"].includes(result.status)) {
           await new Promise<void>((resolve, reject) => {
             const onAbort = () => {
@@ -827,17 +847,18 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
       } while (["processing", "queued"].includes(result.status) && !controller.signal.aborted);
       if (controller.signal.aborted) return;
       if (result.status !== "ready") {
-        const messages: Record<string, string> = {
-          "worker-unavailable": "ติดต่อบริการวิเคราะห์ใน Ubuntu ไม่ได้",
-          "download-timeout": "รับวิดีโอไม่ทันเวลาที่กำหนด ลองใหม่อีกครั้ง",
-          "download-failed": "ดาวน์โหลดวิดีโอเพื่อวิเคราะห์ไม่สำเร็จ",
-          "download-rejected": "คลิปนี้เป็นไลฟ์ คลิปยาวเกิน 15 นาที หรือ YouTube ไม่อนุญาตให้ดึงวิดีโอ",
-          "decode-failed": "อ่านเฟรมวิดีโอไม่สำเร็จ ตรวจว่าติดตั้ง FFmpeg แล้ว",
-          "dependency-missing": "ยังไม่ได้ติดตั้ง MediaPipe สำหรับวิเคราะห์แถว",
-          "tool-missing": "ไม่พบ FFmpeg ใน Ubuntu",
-          "invalid-stage-corners": "มุมพื้นเวทีซ้อนกันหรือเรียงผิดลำดับ ลองตั้งค่า 4 มุมใหม่",
+        const messages: Record<string, [string, string]> = {
+          "worker-unavailable": ["Could not reach the Ubuntu analysis service.", "ติดต่อบริการวิเคราะห์ใน Ubuntu ไม่ได้"],
+          "download-timeout": ["The video download timed out. Try again.", "รับวิดีโอไม่ทันเวลาที่กำหนด ลองใหม่อีกครั้ง"],
+          "download-failed": ["Could not download the video for analysis.", "ดาวน์โหลดวิดีโอเพื่อวิเคราะห์ไม่สำเร็จ"],
+          "download-rejected": ["This video is live, longer than 15 minutes, or unavailable for download from YouTube.", "คลิปนี้เป็นไลฟ์ คลิปยาวเกิน 15 นาที หรือ YouTube ไม่อนุญาตให้ดึงวิดีโอ"],
+          "decode-failed": ["Could not read video frames. Check that FFmpeg is installed.", "อ่านเฟรมวิดีโอไม่สำเร็จ ตรวจว่าติดตั้ง FFmpeg แล้ว"],
+          "dependency-missing": ["MediaPipe is not installed for formation analysis.", "ยังไม่ได้ติดตั้ง MediaPipe สำหรับวิเคราะห์แถว"],
+          "tool-missing": ["FFmpeg was not found in Ubuntu.", "ไม่พบ FFmpeg ใน Ubuntu"],
+          "invalid-stage-corners": ["The floor corners overlap or are out of order. Set all four again.", "มุมพื้นเวทีซ้อนกันหรือเรียงผิดลำดับ ลองตั้งค่า 4 มุมใหม่"],
         };
-        throw new Error(messages[result.reason ?? ""] ?? "วิเคราะห์แถวไม่สำเร็จ");
+        const message = messages[result.reason ?? ""] ?? ["Formation analysis failed.", "วิเคราะห์แถวไม่สำเร็จ"];
+        throw new Error(tr(message[0], message[1]));
       }
       const formations = result.formations ?? [];
       saveFormations(videoId, formations);
@@ -848,17 +869,17 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
     }
     catch (error) {
       if (controller.signal.aborted) return;
-      setFormationError(error instanceof Error ? error.message : "วิเคราะห์แถวไม่สำเร็จ");
+      setFormationError(error instanceof Error ? error.message : tr("Formation analysis failed.", "วิเคราะห์แถวไม่สำเร็จ"));
       setFormationStatus("error");
     }
-  }, [stageCorners, videoId]);
+  }, [stageCorners, videoId, language]);
 
   useEffect(() => () => stopFormationAnalysis(), [stopFormationAnalysis]);
 
   const settings = (
     <>
           <label>
-            เสียง{" "}
+            {tr("Volume", "เสียง")} {" "}
             <input
               type="range"
               min={0}
@@ -869,11 +890,11 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
           </label>
 
           <label>
-            <input type="checkbox" checked={mirrored} onChange={(e) => setMirrored(e.target.checked)} /> กลับด้านซ้าย-ขวา
+            <input type="checkbox" checked={mirrored} onChange={(e) => setMirrored(e.target.checked)} /> {tr("Mirror", "กลับด้านซ้าย-ขว")}
           </label>
 
           <label>
-            ความเร็ว{" "}
+            {tr("Speed", "ความเร็ว")} {" "}
             <select
               value={rate}
               disabled={!ready}
@@ -884,41 +905,198 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
             >
               {RATES.map((r) => (
                 <option key={r} value={r}>
-                  {r === 1 ? "ปกติ" : `${r}x`}
+                  {r === 1 ? tr("Normal", "ปกติ") : `${r}x`}
                 </option>
               ))}
             </select>
           </label>
 
-          <label>
-            ความละเอียด{" "}
-            <select
-              value={quality}
-              disabled={!ready}
-              onChange={(e) => {
-                changeQuality(e.target.value);
-                e.currentTarget.blur();
-              }}
-            >
-              <option value="auto">{QUALITY_LABELS.auto}</option>
-              {qualityLevels.map((q) => (
-                <option key={q} value={q}>
-                  {QUALITY_LABELS[q] ?? q}
-                </option>
-              ))}
-              {/* ค่าที่จำไว้แต่คลิปนี้ไม่มีให้ ยังต้องแสดงใน select ให้ตรงกับ state */}
-              {quality !== "auto" && !qualityLevels.includes(quality) && (
-                <option value={quality}>{QUALITY_LABELS[quality] ?? quality}</option>
-              )}
-            </select>
-          </label>
-      {qualityNote && <div className="yp-note">{qualityNote}</div>}
     </>
+  );
+
+  const selectedHighlight = activeHl === null ? undefined : highlights[activeHl];
+  const activeHighlight = selectedHighlight && highlightRangePreview?.index === activeHl
+    ? { ...selectedHighlight, start: highlightRangePreview.start, end: highlightRangePreview.end }
+    : selectedHighlight;
+  const seekPercent = duration > 0 ? Math.min(100, Math.max(0, (time / duration) * 100)) : 0;
+  const fullscreenHighlights = showAnalysisTools && (
+    <section className="yp-fullscreen-highlights" aria-label={tr("Clip highlights", "ไฮไลท์คลิป")}>
+      <div className="yp-highlight-heading">
+        <strong>HIGHLIGHT / A–B</strong>
+        <small>{tr("Auto highlights", "ไฮไลท์อัตโนมัติ")} · {highlights.length ? `${highlights.length} ${tr("saved", "รายการที่บันทึก")}` : tr("none saved", "ยังไม่มี")}</small>
+      </div>
+      <div className="yp-fullscreen-waveform" aria-hidden="true">
+        {WAVEFORM_BARS.map((height, index) => {
+          const at = (index / (WAVEFORM_BARS.length - 1)) * duration;
+          const selected = !!activeHighlight && at >= activeHighlight.start && at <= activeHighlight.end;
+          const automatic = highlights.some((segment) => at >= segment.start && at <= segment.end);
+          return <span key={index} className={selected ? "is-selected" : automatic ? "is-auto" : ""} style={{ height: `${height}%` }} />;
+        })}
+      </div>
+      <div className="yp-waveform-legend" aria-label={tr("Highlight color legend", "คำอธิบายสีไฮไลท์")}>
+        <span><i className="is-auto" />{tr("Auto highlight", "ไฮไลท์อัตโนมัติ")}</span>
+        <span><i className="is-selected" />{tr("Selected A–B", "ช่วงที่เลือก A–B")}</span>
+      </div>
+      {highlights.length > 0 && (
+        <div className="yp-hls" role="group" aria-label={tr("Popular segments", "ท่อนยอดนิยม")}>
+          {highlights.map((segment, index) => (
+            <button key={`${segment.start}-${index}`} type="button" className="yp-hl-chip"
+              aria-pressed={activeHl === index} onClick={() => selectHighlight(index)}>
+              ▶ {formatTime(segment.start)}–{formatTime(segment.end)}
+            </button>
+          ))}
+        </div>
+      )}
+      {activeHighlight && (
+        <div className="yp-ab-range">
+          <small>{tr("EDIT A–B · DRAG THE EDGES", "แก้ไข A–B · ลากขอบเพื่อปรับช่วง")}</small>
+          <div className="yp-ab-values">
+            <button type="button" aria-label={tr("Go to highlight start", "ไปยังจุดเริ่มของช่วงไฮไลท์")} onClick={() => { playerRef.current?.seekTo(activeHighlight.start, true); setTime(activeHighlight.start); }}>{formatTime(activeHighlight.start)}</button>
+            <button type="button" aria-label={tr("Go to highlight end", "ไปยังจุดจบของช่วงไฮไลท์")} onClick={() => { playerRef.current?.seekTo(activeHighlight.end, true); setTime(activeHighlight.end); }}>{formatTime(activeHighlight.end)}</button>
+          </div>
+          <div className="yp-ab-labels"><span>{tr("A / START", "A / เริ่ม")}</span><span>{tr("B / END", "B / จบ")}</span></div>
+        </div>
+      )}
+      {highlights.length > 0 && (
+        <label className="yp-hl-loop">
+          <input type="checkbox" checked={loopHl} disabled={activeHl === null} onChange={(event) => setLoopHl(event.target.checked)} />
+          {" "}{tr("Loop selected range", "วนซ้ำท่อนที่เลือก")}
+        </label>
+      )}
+      <HighlightEditor key={`fullscreen-highlight-editor-${videoId}`} highlights={highlights} duration={duration}
+        currentTime={time} onSave={onHighlightsChange} language={language} />
+    </section>
+  );
+
+  const controls = (
+      <div className="yp-controls">
+        <div className="yp-seek">
+          <span>{formatTime(time)}</span>
+          <div ref={waveformTrackRef} onPointerMove={moveHighlightDrag} onPointerUp={finishHighlightDrag} onPointerCancel={cancelHighlightDrag}
+            className={`yp-track ${showAnalysisTools && !isFullscreen ? "yp-track--waveform" : ""}`}>
+            {showAnalysisTools && !isFullscreen && duration > 0 && (
+              <div className="yp-waveform-bars" aria-hidden="true">
+                {WAVEFORM_BARS.map((height, index) => {
+                  const barTime = (index / (WAVEFORM_BARS.length - 1)) * duration;
+                  const selected = !!activeHighlight && barTime >= activeHighlight.start && barTime <= activeHighlight.end;
+                  const automatic = highlights.some((segment) => barTime >= segment.start && barTime <= segment.end);
+                  return <span key={index} className={selected ? "is-selected" : automatic ? "is-auto" : ""} style={{ height: `${height}%` }} />;
+                })}
+              </div>
+            )}
+            {showAnalysisTools && !isFullscreen && <span className="yp-wave-progress" aria-hidden="true">
+              <span style={{ width: `${seekPercent}%` }} />
+            </span>}
+            {/* แถบสีบอกช่วงท่อนยอดนิยม (ไม่รับเมาส์ ให้คลิกกรอที่แถบกรอได้ตามปกติ) */}
+            {showAnalysisTools && !isFullscreen && duration > 0 && highlights.length > 0 && (
+              <div className="yp-hl-lane">
+                {highlights.map((h, i) => {
+                  const range = highlightRangePreview?.index === i ? highlightRangePreview : h;
+                  return range.start < duration ? (
+                    <span
+                      key={`${h.start}-${i}`}
+                      className={`yp-hl ${h.confidence === "high" ? "is-high" : ""} ${activeHl === i ? "is-active" : ""}`}
+                      style={{
+                        left: `${(range.start / duration) * 100}%`,
+                        width: `${((Math.min(range.end, duration) - range.start) / duration) * 100}%`,
+                      }}
+                      title={tr(`${h.label} (${formatTime(range.start)}–${formatTime(range.end)}) · Drag the middle to move`, `${h.label} (${formatTime(range.start)}–${formatTime(range.end)}) · ลากตรงกลางเพื่อย้ายช่วง`)}
+                      onPointerDown={!isFullscreen && activeHl === i ? (event) => beginHighlightDrag(event, i, "move") : undefined}
+                    >
+                      {!isFullscreen && activeHl === i && <>
+                        <button type="button" className="yp-hl-handle yp-hl-handle--start" aria-label={tr("Drag to change highlight start", "ลากเพื่อเปลี่ยนเวลาเริ่มไฮไลท์")}
+                          onPointerDown={(event) => beginHighlightDrag(event, i, "start")} />
+                        <button type="button" className="yp-hl-handle yp-hl-handle--end" aria-label={tr("Drag to change highlight end", "ลากเพื่อเปลี่ยนเวลาจบไฮไลท์")}
+                          onPointerDown={(event) => beginHighlightDrag(event, i, "end")} />
+                      </>}
+                    </span>
+                  ) : null;
+                })}
+              </div>
+            )}
+            <input
+              className={showAnalysisTools && !isFullscreen ? "yp-wave-seek" : ""}
+              type="range"
+              min={0}
+              max={Math.max(duration, 1)}
+              step={0.1}
+              value={Math.min(time, Math.max(duration, 1))}
+              disabled={!ready}
+              aria-label={tr("Seek video", "กรอวิดีโอ")}
+              onChange={(e) => {
+                setSeeking(true);
+                setTime(Number(e.target.value));
+              }}
+              onPointerUp={commitSeek}
+            />
+          </div>
+          <span>{formatTime(duration)}</span>
+        </div>
+
+        {showAnalysisTools && !isFullscreen && <div className="yp-highlight-heading"><strong>HIGHLIGHT / A–B</strong><small>{tr("Auto highlights", "ไฮไลท์อัตโนมัติ")} · {highlights.length ? `${highlights.length} ${tr("saved", "รายการที่บันทึก")}` : tr("none saved", "ยังไม่มี")}</small></div>}
+
+        {showAnalysisTools && !isFullscreen && highlights.length > 0 && (
+          <div className="yp-waveform-legend" aria-label={tr("Highlight color legend", "คำอธิบายสีไฮไลท์")}>
+            <span><i className="is-auto" />{tr("Auto highlight", "ไฮไลท์อัตโนมัติ")}</span>
+            <span><i className="is-selected" />{tr("Selected A–B", "ช่วงที่เลือก A–B")}</span>
+          </div>
+        )}
+
+        {showAnalysisTools && !isFullscreen && highlights.length > 0 && (
+          <div className="yp-hls" role="group" aria-label={tr("Popular segments", "ท่อนยอดนิยม")} style={{ "--highlight-count": highlights.length } as React.CSSProperties}>
+            {highlights.map((h, i) => (
+              <button
+                key={`${h.start}-${i}`}
+                type="button"
+                className="yp-hl-chip"
+                aria-pressed={activeHl === i}
+                onClick={(e) => {
+                  selectHighlight(i);
+                  e.currentTarget.blur(); // คืนโฟกัสให้คีย์ลัดใช้ต่อได้
+                }}
+              >
+                ▶ {formatTime(h.start)}–{formatTime(h.end)}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {showAnalysisTools && !isFullscreen && activeHighlight && (
+          <div className="yp-ab-range">
+            <small>{tr("EDIT A–B · DRAG THE EDGES", "แก้ไข A–B · ลากขอบเพื่อปรับช่วง")}</small>
+            <div className="yp-ab-values">
+              <button type="button" aria-label={tr("Go to highlight start", "ไปยังจุดเริ่มของช่วงไฮไลท์")} onClick={() => { playerRef.current?.seekTo(activeHighlight.start, true); setTime(activeHighlight.start); }}>{formatTime(activeHighlight.start)}</button>
+              <button type="button" aria-label={tr("Go to highlight end", "ไปยังจุดจบของช่วงไฮไลท์")} onClick={() => { playerRef.current?.seekTo(activeHighlight.end, true); setTime(activeHighlight.end); }}>{formatTime(activeHighlight.end)}</button>
+            </div>
+            <div className="yp-ab-labels"><span>{tr("A / START", "A / เริ่ม")}</span><span>{tr("B / END", "B / จบ")}</span></div>
+          </div>
+        )}
+
+        {showAnalysisTools && !isFullscreen && highlights.length > 0 && (
+          <button type="button" className="yp-hl-loop" aria-pressed={loopHl} disabled={activeHl === null}
+            onClick={() => setLoopHl((value) => !value)}>
+            Loop {loopHl ? "on" : "off"}
+          </button>
+        )}
+
+        {showAnalysisTools && !isFullscreen && <HighlightEditor
+          key={`highlight-editor-${videoId}`}
+          highlights={highlights}
+          duration={duration}
+          currentTime={time}
+          onSave={onHighlightsChange}
+          language={language}
+        />}
+
+        {/* ปกติแสดงเป็นแถวใต้จอ แต่ตอนเต็มจอจะไปอยู่ในเมนูจุดสามจุดแทน */}
+        {!isFullscreen && showAnalysisTools && <div className="yp-extra-settings">{settings}</div>}
+      </div>
   );
 
   return (
     <div ref={rootRef} className={`yp-root ${isFullscreen ? "is-fullscreen" : ""} ${isFullscreen && idle ? "is-idle" : ""}`}>
-      <div className={`yp-view-layout ${showAnalysisTools ? "has-formation" : ""}`}>
+      <div className={`yp-view-layout ${showAnalysisTools ? "has-formation" : ""} ${isFullscreen && !showPracticePanel ? "practice-panel-closed" : ""}`}>
+        <div className="yp-video-column">
         <div className={`yp-stage ${mirrored ? "is-mirrored" : ""} ${calibrationArmed ? "is-calibrating" : ""}`}>
         {/* yp-frame ถูกขยายให้สูงกว่าเวที แล้วตัดส่วนเกินทิ้ง เพื่อซ่อนแถบชื่อคลิปของ YouTube
             (ตัวอักษรนั้นอยู่ใน iframe ข้ามโดเมน จึงกลับด้านเฉพาะตัวอักษรไม่ได้ ต้องซ่อนแทน) */}
@@ -929,7 +1107,7 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
           {flash && <span className={`yp-flash yp-flash--${flash.pos}`}>{flash.text}</span>}
         </div>
         {focusCountdown !== null && (
-          <div className="yp-focus-countdown" aria-live="assertive" aria-label={`คลิปถัดไปใน ${focusCountdown} วินาที`}>
+          <div className="yp-focus-countdown" aria-live="assertive" aria-label={tr(`Next video in ${focusCountdown} seconds`, `คลิปถัดไปใน ${focusCountdown} วินาที`)}>
             {focusCountdown}
           </div>
         )}
@@ -948,7 +1126,7 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
                   draggingCornerRef.current = index;
                   event.currentTarget.setPointerCapture(event.pointerId);
                 }}
-                aria-label={`ลากมุมเวที ${index + 1}`} title={`มุมเวที ${index + 1}`}>{index + 1}</button>
+                aria-label={tr(`Drag floor corner ${index + 1}`, `ลากมุมเวที ${index + 1}`)} title={tr(`Floor corner ${index + 1}`, `มุมเวที ${index + 1}`)}>{index + 1}</button>
             ))}
           </div>
         )}
@@ -958,8 +1136,8 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
           className="yp-fs"
           onClick={toggleFullscreen}
           disabled={!ready}
-          aria-label={isFullscreen ? "ออกจากเต็มจอ" : "เต็มจอ"}
-          title={isFullscreen ? "ออกจากเต็มจอ" : "เต็มจอ"}
+          aria-label={isFullscreen ? tr("Exit fullscreen", "ออกจากเต็มจอ") : tr("Fullscreen", "เต็มจอ")}
+          title={isFullscreen ? tr("Exit fullscreen", "ออกจากเต็มจอ") : tr("Fullscreen", "เต็มจอ")}
         >
           {isFullscreen ? (
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -974,13 +1152,22 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
 
         {isFullscreen && (
           <>
+            {showAnalysisTools && <button type="button" className="yp-panel-toggle"
+              onClick={() => setShowPracticePanel((visible) => !visible)}
+              aria-label={showPracticePanel ? tr("Hide Practice Tools", "ซ่อนแถบ Practice Tools") : tr("Show Practice Tools", "แสดงแถบ Practice Tools")}
+              aria-pressed={showPracticePanel}
+              title={showPracticePanel ? tr("Hide Practice Tools", "ซ่อน Practice Tools") : tr("Show Practice Tools", "แสดง Practice Tools")}>
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                {showPracticePanel ? <path d="m15 18-6-6 6-6" /> : <path d="m9 18 6-6-6-6" />}
+              </svg>
+            </button>}
             <button
               type="button"
               className="yp-more"
               onClick={() => setMenuOpen((o) => !o)}
-              aria-label="ตั้งค่า"
+              aria-label={tr("Settings", "ตั้งค่า")}
               aria-expanded={menuOpen}
-              title="ตั้งค่า"
+              title={tr("Settings", "ตั้งค่า")}
             >
               <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
                 <circle cx="12" cy="5" r="2" />
@@ -992,18 +1179,23 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
           </>
         )}
 
-        {!ready && !error && <div className="yp-msg">กำลังโหลดเครื่องเล่น…</div>}
+        {!ready && !error && <div className="yp-msg">{tr("Loading player…", "กำลังโหลดเครื่องเล่น…")}</div>}
         {error && (
           <div className="yp-msg" role="alert">
             {error}
           </div>
         )}
         </div>
+        {!isFullscreen && (videoInfo || videoFooter) && <div className="yp-video-details">
+          {videoInfo}
+          {videoFooter && <div className="yp-video-footer">{videoFooter}</div>}
+        </div>}
+        </div>
 
         {showAnalysisTools && (
-          <aside className="yp-formation-map" aria-label="แผนผังแถว">
-            <strong className="yp-practice-heading">PRACTICE TOOLS</strong>
-            <strong>แผนผังแถวตามเวลาในคลิป</strong>
+          <aside className="yp-formation-map" aria-label={tr("Formation map", "แผนผังแถว")}>
+            <strong className="yp-practice-heading">{tr("PRACTICE TOOLS", "เครื่องมือฝึกเต้น")}</strong>
+            <strong className="yp-formation-subheading">{tr("FORMATION TIMELINE", "ไทม์ไลน์ตำแหน่งนักเต้น")}</strong>
             <div className={`yp-formation-map__stage ${editingFormation ? "is-editing" : ""}`}
               onPointerMove={moveFormationDot}
               onPointerUp={() => { draggingPointRef.current = null; }}
@@ -1019,23 +1211,23 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
                     draggingPointRef.current = index;
                     event.currentTarget.setPointerCapture(event.pointerId);
                   } : undefined}
-                  title={point.name || `นักเต้น ${index + 1}`}
+                  title={point.name || tr(`Dancer ${index + 1}`, `นักเต้น ${index + 1}`)}
                 >{point.name && <span className="yp-formation-map__name">{point.name}</span>}</span>
               ))}
               {formationPoints.length === 0 && <span className="yp-formation-map__empty">···</span>}
             </div>
-            <small>
-              {formationStatus === "off" ? "ตั้งค่าพื้นเวที 4 มุมเพื่อเริ่มวิเคราะห์ฟอร์เมชัน" : formationStatus === "loading" ? "กำลังเริ่มงานวิเคราะห์… คลิปยังเล่นต่อได้" : formationStatus === "running"
-                ? formationStage === "downloading" ? "กำลังเตรียมวิดีโอ · คลิปเล่นต่อได้ตามปกติ"
-                : formationStage === "extracting-frames" ? "กำลังเลือกภาพตัวอย่างจากคลิป · คลิปเล่นต่อได้ตามปกติ"
-                  : formationStage === "projecting-floor" ? "กำลังแปลงตำแหน่งเท้าบนพื้นเวที · คลิปเล่นต่อได้ตามปกติ"
-                    : "กำลังวิเคราะห์ตำแหน่งนักเต้น · คลิปเล่นต่อได้ตามปกติ"
-                : formationTimeline.length === 0 ? "ยังไม่พบรูปแบบแถวที่มั่นใจพอ"
-                  : `แถว ${formationTimeline.filter((item) => item.time <= time).length} / ${formationTimeline.length} · ${formationPoints.length} คน · เปลี่ยนตามเวลา ${formatTime(time)}`}
+            <small className="yp-formation-status">
+              {formationStatus === "off" ? tr("Set all 4 floor corners to start formation analysis.", "ตั้งค่าพื้นเวที 4 มุมเพื่อเริ่มวิเคราะห์ฟอร์เมชัน") : formationStatus === "loading" ? tr("Starting analysis… The video can keep playing.", "กำลังเริ่มงานวิเคราะห์… คลิปยังเล่นต่อได้") : formationStatus === "running"
+                ? formationStage === "downloading" ? tr("Preparing the video · Playback continues normally.", "กำลังเตรียมวิดีโอ · คลิปเล่นต่อได้ตามปกติ")
+                : formationStage === "extracting-frames" ? tr("Selecting sample frames · Playback continues normally.", "กำลังเลือกภาพตัวอย่างจากคลิป · คลิปเล่นต่อได้ตามปกติ")
+                  : formationStage === "projecting-floor" ? tr("Mapping foot positions to the floor · Playback continues normally.", "กำลังแปลงตำแหน่งเท้าบนพื้นเวที · คลิปเล่นต่อได้ตามปกติ")
+                    : tr("Analyzing dancer positions · Playback continues normally.", "กำลังวิเคราะห์ตำแหน่งนักเต้น · คลิปเล่นต่อได้ตามปกติ")
+                : formationTimeline.length === 0 ? tr("No confident formation patterns found yet.", "ยังไม่พบรูปแบบแถวที่มั่นใจพอ")
+                  : tr(`Formation ${formationTimeline.filter((item) => item.time <= time).length} / ${formationTimeline.length} · ${formationPoints.length} dancers · ${formatTime(time)}`, `แถว ${formationTimeline.filter((item) => item.time <= time).length} / ${formationTimeline.length} · ${formationPoints.length} คน · เปลี่ยนตามเวลา ${formatTime(time)}`)}
             </small>
             {formationStatus === "ready" && formationTimeline.length > 0 && (
               <div className="yp-formation-editor">
-                <label>ฟอร์เมชันที่แก้ไข
+                <label>{tr("Edit formation", "ฟอร์เมชันที่แก้ไข")}
                   <select value={selectedFormationIndex} onChange={(event) => {
                     const index = Number(event.target.value);
                     setSelectedFormationIndex(index);
@@ -1044,28 +1236,28 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
                     playerRef.current?.seekTo(targetTime, true);
                     playerRef.current?.pauseVideo();
                   }}>
-                    {formationTimeline.map((item, index) => <option key={`${item.time}-${index}`} value={index}>แถว {index + 1} · {formatTime(item.time)}</option>)}
+                    {formationTimeline.map((item, index) => <option key={`${item.time}-${index}`} value={index}>{tr(`Formation ${index + 1}`, `แถว ${index + 1}`)} · {formatTime(item.time)}</option>)}
                   </select>
                 </label>
                 <button type="button" onClick={() => setEditingFormation((value) => !value)}>
-                  {editingFormation ? "เสร็จสิ้นการแก้ไข" : "แก้ไขจุดและชื่อคน"}
+                  {editingFormation ? tr("Finish editing", "เสร็จสิ้นการแก้ไข") : tr("Edit points and dancer names", "แก้ไขจุดและชื่อคน")}
                 </button>
                 {editingFormation && <>
-                  <small>ชื่อจะผูกกับนักเต้นคนเดิมและใช้ร่วมกันทุกฟอร์เมชันในคลิปนี้</small>
+                  <small>{tr("Names stay linked to the same dancer across all formations in this video.", "ชื่อจะผูกกับนักเต้นคนเดิมและใช้ร่วมกันทุกฟอร์เมชันในคลิปนี้")}</small>
                   <div className="yp-formation-editor__people">
                   {activeFormationPoint.map((point, index) => (
                     <label key={point.track_id ?? index}>
                       <span style={{ color: FORMATION_COLORS[point.color % FORMATION_COLORS.length] }}>●</span>
-                      <input aria-label={`ชื่อนักเต้นจุด ${index + 1}`} placeholder={`นักเต้น ${index + 1}`} value={point.name ?? ""}
+                      <input aria-label={tr(`Dancer ${index + 1} name`, `ชื่อนักเต้นจุด ${index + 1}`)} placeholder={tr(`Dancer ${index + 1}`, `นักเต้น ${index + 1}`)} value={point.name ?? ""}
                         onChange={(event) => updateFormationPoint(index, { name: event.target.value })} />
                       <small>{Math.round(point.x * 100)}%, {Math.round(point.y * 100)}%</small>
                     </label>
                   ))}
                   </div>
                 </>}
-                <button type="button" onClick={saveFormationEdits} disabled={!formationDirty}>
-                  {formationDirty ? "บันทึกฟอร์เมชันที่แก้แล้ว" : "บันทึกแล้ว"}
-                </button>
+                {formationDirty && <button type="button" onClick={saveFormationEdits}>
+                  {tr("Save formation changes", "บันทึกฟอร์เมชันที่แก้แล้ว")}
+                </button>}
               </div>
             )}
             <div className="yp-practice-settings">
@@ -1077,140 +1269,54 @@ export default function YouTubePlayer({ videoId, showAnalysisTools = true, autoP
                   </select>
                 </label>
               </div>
-              <label className="yp-volume-control">เสียง <input type="range" min={0} max={100} value={volume} onChange={(e) => changeVolume(Number(e.target.value))} /></label>
-              <label className="yp-quality-control">ความละเอียด
-                <select value={quality} disabled={!ready} onChange={(e) => changeQuality(e.target.value)}>
-                  <option value="auto">อัตโนมัติ</option>
-                  {qualityLevels.map((q) => <option key={q} value={q}>{QUALITY_LABELS[q] ?? q}</option>)}
-                </select>
-              </label>
+              <label className="yp-volume-control">{tr("Volume", "เสียง")} <input type="range" min={0} max={100} value={volume} onChange={(e) => changeVolume(Number(e.target.value))} /></label>
             </div>
             <div className="yp-formation-tools">
-              {!calibrationArmed ? <button type="button" onClick={beginStageCalibration}>
-                {stageCorners.length === 4 ? "ตั้งค่าพื้นเวทีใหม่" : "ตั้งค่าพื้นเวที · Mark 4 points"}
+              {!calibrationArmed ? <button type="button" className="yp-position-button" onClick={beginStageCalibration}>
+                {stageCorners.length === 4 ? "Position · Edit floor corners" : "Position · Mark 4 points"}
               </button> : <>
-                <button type="button" onClick={saveStageCalibrationDraft}>บันทึกตำแหน่งมุมเวที</button>
-                <button type="button" onClick={cancelStageCalibration}>ยกเลิก</button>
+                <button type="button" className="yp-position-button" onClick={saveStageCalibrationDraft}>{tr("Save floor corners", "บันทึกมุมพื้นเวที")}</button>
+                <button type="button" className="yp-position-cancel" onClick={cancelStageCalibration}>{tr("Cancel", "ยกเลิก")}</button>
               </>}
-              <small>
+              <small className="yp-position-help">
                 {calibrationArmed
-                  ? "ลากจุด 1–4 ไปวางที่มุมเวที แล้วกดบันทึกตำแหน่ง (ยกเลิกได้โดยไม่เปลี่ยนค่าที่บันทึกไว้)"
+                  ? "Drag points 1–4 to the floor corners, then save your position."
                   : stageCorners.length !== 4 && formationStatus === "off"
-                    ? "Mark 4 points to show the formation."
+                    ? "Mark 4 floor corners to show Position."
                   : ["loading", "running"].includes(formationStatus)
-                  ? "วิเคราะห์เบื้องหลัง คลิปยังเล่นต่อได้"
-                  : "จุดคำนวณจากตำแหน่งเท้าบนพื้นเวที"}
+                  ? tr("Analyzing in the background · Playback continues.", "วิเคราะห์เบื้องหลัง คลิปยังเล่นต่อได้")
+                  : tr("Set the 4 floor corners to start formation analysis.", "ตั้งค่าพื้นเวที 4 มุมเพื่อเริ่มวิเคราะห์ฟอร์เมชัน")}
               </small>
               <button
                 type="button"
+                className="yp-analyze-button"
                 onClick={["loading", "running"].includes(formationStatus) ? stopFormationAnalysis : startFormationAnalysis}
                 disabled={!stageCorners.length && !["loading", "running"].includes(formationStatus)}
               >
-                {formationStatus === "loading" ? "กำลังเริ่มวิเคราะห์… (ยกเลิก)" : formationStatus === "running" ? "หยุดรอผลวิเคราะห์" : formationStatus === "ready" ? "วิเคราะห์แถวอีกครั้ง" : "วิเคราะห์แถวทั้งคลิป"}
+                {formationStatus === "loading" ? tr("Starting analysis… (Cancel)", "กำลังเริ่มวิเคราะห์… (ยกเลิก)") : formationStatus === "running" ? tr("Stop analysis", "หยุดรอผลวิเคราะห์") : formationStatus === "ready" ? tr("Analyze formations again", "วิเคราะห์แถวอีกครั้ง") : tr("Analyze the full video", "วิเคราะห์แถวทั้งคลิป")}
               </button>
-              {formationError && <small className="yp-formation-error" role="status">วิเคราะห์ตำแหน่งไม่ได้: {formationError}</small>}
+              {formationError && <small className="yp-formation-error" role="status">{tr("Could not analyze positions:", "วิเคราะห์ตำแหน่งไม่ได้:")} {formationError}</small>}
             </div>
+            {isFullscreen && fullscreenHighlights}
+            {!isFullscreen && <div className="yp-right-media-controls">{controls}</div>}
           </aside>
         )}
       </div>
 
-      <div className="yp-controls">
-        <div className="yp-seek">
-          <span>{formatTime(time)}</span>
-          <div className="yp-track">
-            {/* แถบสีบอกช่วงท่อนยอดนิยม (ไม่รับเมาส์ ให้คลิกกรอที่แถบกรอได้ตามปกติ) */}
-            {showAnalysisTools && duration > 0 && highlights.length > 0 && (
-              <div className="yp-hl-lane" aria-hidden="true">
-                {highlights.map((h, i) =>
-                  h.start < duration ? (
-                    <span
-                      key={`${h.start}-${i}`}
-                      className={`yp-hl ${h.confidence === "high" ? "is-high" : ""} ${activeHl === i ? "is-active" : ""}`}
-                      style={{
-                        left: `${(h.start / duration) * 100}%`,
-                        width: `${((Math.min(h.end, duration) - h.start) / duration) * 100}%`,
-                      }}
-                      title={`${h.label} (${formatTime(h.start)}–${formatTime(h.end)})`}
-                    />
-                  ) : null,
-                )}
-              </div>
-            )}
-            <input
-              type="range"
-              min={0}
-              max={Math.max(duration, 1)}
-              step={0.1}
-              value={Math.min(time, Math.max(duration, 1))}
-              disabled={!ready}
-              aria-label="กรอวิดีโอ"
-              onChange={(e) => {
-                setSeeking(true);
-                setTime(Number(e.target.value));
-              }}
-              onPointerUp={commitSeek}
-            />
-          </div>
-          <span>{formatTime(duration)}</span>
-        </div>
-
-        {showAnalysisTools && highlights.length > 0 && (
-          <div className="yp-hls" role="group" aria-label="ท่อนยอดนิยม">
-            {highlights.map((h, i) => (
-              <button
-                key={`${h.start}-${i}`}
-                type="button"
-                className="yp-hl-chip"
-                aria-pressed={activeHl === i}
-                onClick={(e) => {
-                  selectHighlight(i);
-                  e.currentTarget.blur(); // คืนโฟกัสให้คีย์ลัดใช้ต่อได้
-                }}
-                title={h.evidence}
-              >
-                ▶ {formatTime(h.start)}–{formatTime(h.end)} · {h.label}
-              </button>
-            ))}
-            <label className="yp-hl-loop">
-              <input
-                type="checkbox"
-                checked={loopHl}
-                disabled={activeHl === null}
-                onChange={(e) => {
-                  setLoopHl(e.target.checked);
-                  e.currentTarget.blur();
-                }}
-              />{" "}
-              วนซ้ำท่อนที่เลือก
-            </label>
-            {/* หลักฐานที่ระบบใช้เสนอท่อนนี้ ให้ผู้ใช้ตรวจสอบเองได้ */}
-            <small className="yp-hl-evidence">
-              {highlights[activeHl ?? 0]?.evidence}
-            </small>
-          </div>
-        )}
-
-        {showAnalysisTools && <HighlightEditor
-          key={`highlight-editor-${videoId}`}
-          highlights={highlights}
-          duration={duration}
-          currentTime={time}
-          onSave={onHighlightsChange}
-        />}
-
-        {/* ปกติแสดงเป็นแถวใต้จอ แต่ตอนเต็มจอจะไปอยู่ในเมนูจุดสามจุดแทน */}
-        {!isFullscreen && showAnalysisTools && <div className="yp-extra-settings">{settings}</div>}
-      </div>
+      {(isFullscreen || !showAnalysisTools) && controls}
     </div>
   );
 }
 
-function HighlightEditor({ highlights, duration, currentTime, onSave }: {
+function HighlightEditor({ highlights, duration, currentTime, onSave, language }: {
   highlights: AutoSegment[];
   duration: number;
   currentTime: number;
   onSave?: (segments: AutoSegment[]) => void;
+  language: string;
 }) {
+  const th = language === "ไทย";
+  const tr = (english: string, thai: string) => th ? thai : english;
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<AutoSegment[]>([]);
   const [saved, setSaved] = useState(false);
@@ -1232,8 +1338,8 @@ function HighlightEditor({ highlights, duration, currentTime, onSave }: {
     if (!duration) return;
     const start = Math.min(currentTime, Math.max(0, duration - 1));
     const end = Math.min(duration, start + 10);
-    setDraft(items => [...items, { origin: "manual", kind: "chorus", start, end, label: "ท่อนที่เพิ่มเอง",
-      confidence: "medium", evidence: "เพิ่มโดยผู้ใช้" }]);
+    setDraft(items => [...items, { origin: "manual", kind: "chorus", start, end, label: tr("Added segment", "ท่อนที่เพิ่มเอง"),
+      confidence: "medium", evidence: tr("Added by user", "เพิ่มโดยผู้ใช้") }]);
     setSaved(false);
   }
 
@@ -1248,34 +1354,34 @@ function HighlightEditor({ highlights, duration, currentTime, onSave }: {
     <div className="yp-highlight-editor">
       {!open ? (
         <>
-          <button type="button" onClick={beginEditing}>แก้ไขไฮไลท์</button>
-          {saved && <small role="status">บันทึกไฮไลท์แล้ว</small>}
+          <button type="button" onClick={beginEditing}>{tr("Edit highlights", "แก้ไขไฮไลท์")}</button>
+          {saved && <small role="status">{tr("Highlights saved.", "บันทึกไฮไลท์แล้ว")}</small>}
         </>
       ) : (
         <div className="yp-highlight-editor__panel">
-          <strong>แก้ไขท่อนไฮไลท์</strong>
-          {draft.length === 0 && <small>ยังไม่มีท่อนไฮไลท์ กด “เพิ่มท่อน” เพื่อสร้างเอง</small>}
+          <strong>{tr("Edit highlight segments", "แก้ไขท่อนไฮไลท์")}</strong>
+          {draft.length === 0 && <small>{tr("No highlights yet. Select Add segment to create one.", "ยังไม่มีท่อนไฮไลท์ กด “เพิ่มท่อน” เพื่อสร้างเอง")}</small>}
           {draft.map((segment, index) => (
             <div className="yp-highlight-editor__row" key={`${index}-${segment.start}`}>
-              <label>ชื่อ
+              <label>{tr("Name", "ชื่อ")}
                 <input value={segment.label} onChange={event => update(index, { label: event.target.value })} />
               </label>
-              <label>เริ่ม (วินาที)
+              <label>{tr("Start (seconds)", "เริ่ม (วินาที)")}
                 <input type="number" min={0} max={duration || undefined} step={0.1} value={Number.isFinite(segment.start) ? segment.start : ""}
                   onChange={event => update(index, { start: event.target.value === "" ? Number.NaN : Number(event.target.value) })} />
               </label>
-              <label>จบ (วินาที)
+              <label>{tr("End (seconds)", "จบ (วินาที)")}
                 <input type="number" min={0} max={duration || undefined} step={0.1} value={Number.isFinite(segment.end) ? segment.end : ""}
                   onChange={event => update(index, { end: event.target.value === "" ? Number.NaN : Number(event.target.value) })} />
               </label>
-              <button type="button" onClick={() => setDraft(items => items.filter((_, i) => i !== index))}>ลบท่อน</button>
+              <button type="button" onClick={() => setDraft(items => items.filter((_, i) => i !== index))}>{tr("Remove segment", "ลบท่อน")}</button>
             </div>
           ))}
           <div className="yp-highlight-editor__actions">
-            <button type="button" onClick={addSegment} disabled={!duration}>เพิ่มท่อน ณ เวลาปัจจุบัน</button>
-            <button type="button" onClick={() => setOpen(false)}>ยกเลิก</button>
-            <button type="button" onClick={save} disabled={!valid}>บันทึกการแก้ไข</button>
-            {!valid && <small role="alert">ตรวจเวลาเริ่มและเวลาจบ: ต้องไม่ติดลบ เวลาจบต้องมากกว่าเวลาเริ่มและไม่เกินความยาวคลิป</small>}
+            <button type="button" onClick={addSegment} disabled={!duration}>{tr("Add segment at current time", "เพิ่มท่อน ณ เวลาปัจจุบัน")}</button>
+            <button type="button" onClick={() => setOpen(false)}>{tr("Cancel", "ยกเลิก")}</button>
+            <button type="button" onClick={save} disabled={!valid}>{tr("Save changes", "บันทึกการแก้ไข")}</button>
+            {!valid && <small role="alert">{tr("Check the start and end: values must be non-negative, end must be after start, and within the video duration.", "ตรวจเวลาเริ่มและเวลาจบ: ต้องไม่ติดลบ เวลาจบต้องมากกว่าเวลาเริ่มและไม่เกินความยาวคลิป")}</small>}
           </div>
         </div>
       )}

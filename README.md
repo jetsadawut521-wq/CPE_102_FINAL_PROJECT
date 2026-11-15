@@ -22,6 +22,8 @@ Choose **Random Dance** in a playlist, then press its play-all button. Muverse i
 
 Analysis results and edited formations are stored in the browser that performed the work. They do not sync across browsers or computers. If a video has not yet been analyzed and saved, it is not eligible for Random Dance.
 
+The Random Dance landing page also includes three built-in starter sets: Trending, T-pop, and K-pop Mix. Each has six clips. Their saved highlight and formation data is bundled in `data/recommended-playlists.json`, so new installations can use them immediately without adding them to a user's personal Playlists. Browser edits override the bundled analysis for that browser.
+
 ## Technology and upstream projects
 
 - [GridStage](https://github.com/ChangShengHsun/GridStage) — reference for the stage-calibration and top-down formation-editor workflow. Muverse's analyzer/UI in this branch is an independent implementation; GridStage source code was not copied into this repository. GridStage is MIT-licensed; see its [license](https://github.com/ChangShengHsun/GridStage/blob/main/LICENSE).
@@ -55,7 +57,8 @@ Open <http://localhost:3100>. Keep this terminal open. The Python worker is a se
 - `app/page.tsx` — app state, playlist playback, and Random Dance sequencing.
 - `components/youtube-player.tsx` — YouTube IFrame player, formation viewer/editor, and calibration controls.
 - `lib/highlight-analysis.ts`, `lib/highlight-sources.ts`, `app/api/youtube/highlights/route.ts` — highlight analysis and source alignment.
-- `lib/analysis-storage.ts`, `lib/auto-highlights.ts` — browser persistence for completed analyses.
+- `lib/analysis-storage.ts`, `lib/auto-highlights.ts` — browser persistence for completed analyses, with bundled defaults for the built-in starter playlists.
+- `data/recommended-playlists.json` — the three six-clip starter playlists and their saved highlight/formation data.
 - `services/audio-analysis/server.py` — local loopback worker API.
 - `services/audio-analysis/analyze_formations.py` — YOLO pose inference, floor projection, dancer tracking, and formation extraction.
 - `docs/DEVELOPER_GUIDE.md` — full installation, exact commands, architecture, and troubleshooting.

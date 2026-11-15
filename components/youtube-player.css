@@ -81,12 +81,38 @@
 .yp-root.is-fullscreen .yp-stage { position: absolute; inset: 0; aspect-ratio: auto; max-width: none; }
 .yp-root.is-fullscreen .yp-view-layout.has-formation { position: absolute; inset: 0; max-width: none; display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr); gap: 1rem; align-items: center; padding: 1rem 1rem 5rem; }
+.yp-root.is-fullscreen .yp-view-layout.has-formation.practice-panel-closed { grid-template-columns: minmax(0, 1fr); }
+.yp-root.is-fullscreen .yp-view-layout.has-formation.practice-panel-closed .yp-formation-map { display: none; }
 .yp-root.is-fullscreen .yp-view-layout.has-formation .yp-stage { position: relative; inset: auto; aspect-ratio: 16 / 9; max-width: none; }
-.yp-root.is-fullscreen .yp-formation-map { width: 100%; }
+.yp-root.is-fullscreen .yp-formation-map { width: 100%; max-height: calc(100vh - 7rem); overflow-y: auto; align-content: start; }
+.yp-fullscreen-highlights { display: grid; gap: 0.7rem; padding-top: 0.85rem; border-top: 1px solid rgb(0 0 0 / 0.14); color: #171717; }
+.yp-fullscreen-highlights .yp-highlight-heading { margin-top: 0; }
+.yp-fullscreen-highlights .yp-highlight-heading strong { color: #666660; }
+.yp-fullscreen-highlights .yp-hls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.45rem; }
+.yp-fullscreen-highlights .yp-hl-chip { width: 100%; min-width: 0; text-align: left; white-space: normal; }
+.yp-fullscreen-waveform { height: 3.4rem; display: flex; align-items: center; justify-content: space-around; gap: 3px; overflow: hidden;
+  padding: 0 0.55rem; border-radius: 0.55rem; background: #171717; }
+.yp-fullscreen-waveform span { flex: 1 1 3px; min-width: 2px; max-width: 4px; min-height: 5px; border-radius: 3px; background: #c9c9c9; }
+.yp-fullscreen-waveform span.is-auto { background: #ff7738; }
+.yp-fullscreen-waveform span.is-selected { background: #c6ff22; }
+.yp-fullscreen-highlights .yp-waveform-legend { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; color: #777; font-size: 0.8rem; }
+.yp-fullscreen-highlights .yp-waveform-legend span { display: flex; align-items: center; gap: 0.4rem; }
+.yp-fullscreen-highlights .yp-waveform-legend i { width: 1rem; height: 0.4rem; border-radius: 999px; background: #ff7738; }
+.yp-fullscreen-highlights .yp-waveform-legend i.is-selected { background: #c6ff22; }
+.yp-fullscreen-highlights .yp-ab-range { display: grid; gap: 0.45rem; }
+.yp-fullscreen-highlights .yp-ab-range > small, .yp-fullscreen-highlights .yp-ab-labels { color: #666; font-size: 0.78rem; }
+.yp-fullscreen-highlights .yp-ab-values { display: grid; grid-template-columns: 1fr 1fr; gap: 0.55rem; }
+.yp-fullscreen-highlights .yp-ab-values button { min-height: 2.8rem; border: 0; border-radius: 999px; background: #fff; font-size: 1rem; font-weight: 700; }
+.yp-fullscreen-highlights .yp-ab-labels { display: flex; justify-content: space-between; font-weight: 700; }
+.yp-fullscreen-highlights .yp-highlight-editor__panel { box-sizing: border-box; width: 100%; }
+
 .yp-root.is-fullscreen .yp-controls { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; max-width: none; margin: 0;
   padding: 2.5rem 1rem 0.75rem; background: linear-gradient(transparent, rgb(0 0 0 / 0.7)); transition: opacity 0.4s; }
 .yp-root.is-fullscreen .yp-fs { top: 0.75rem; bottom: auto; right: 0.75rem; opacity: 0.7; transition: opacity 0.4s, background 0.2s; }
 .yp-root.is-fullscreen .yp-fs:hover { opacity: 1; }
+
+.yp-panel-toggle { position:absolute; top:0.75rem; right:7rem; z-index:4; display:grid; place-items:center; width:2.5rem; height:2.5rem; padding:0; border:0; border-radius:0.65rem; background:rgb(0 0 0 / .45); color:#fff; cursor:pointer; opacity:.78; transition:opacity .2s,background .2s; }
+.yp-panel-toggle:hover { opacity:1; background:rgb(0 0 0 / .72); }
 
 .yp-more { position: absolute; top: 0.75rem; right: 4rem; z-index: 2; display: grid; place-items: center;
   width: 2.5rem; height: 2.5rem; padding: 0; border: 0; border-radius: 0.5rem; cursor: pointer;
@@ -102,6 +128,7 @@
 .yp-root.is-fullscreen.is-idle .yp-controls,
 .yp-root.is-fullscreen.is-idle .yp-fs,
 .yp-root.is-fullscreen.is-idle .yp-more,
+.yp-root.is-fullscreen.is-idle .yp-panel-toggle,
 .yp-root.is-fullscreen.is-idle .yp-menu { opacity: 0; pointer-events: none; }
 
 /* ท่อนยอดนิยมบนแถบกรอ */
