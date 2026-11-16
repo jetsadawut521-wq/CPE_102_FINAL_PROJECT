@@ -1217,7 +1217,7 @@ export default function YouTubePlayer({ language = "English", videoId, showAnaly
               {formationPoints.length === 0 && <span className="yp-formation-map__empty">···</span>}
             </div>
             <small className="yp-formation-status">
-              {formationStatus === "off" ? tr("Set all 4 floor corners to start formation analysis.", "ตั้งค่าพื้นเวที 4 มุมเพื่อเริ่มวิเคราะห์ฟอร์เมชัน") : formationStatus === "loading" ? tr("Starting analysis… The video can keep playing.", "กำลังเริ่มงานวิเคราะห์… คลิปยังเล่นต่อได้") : formationStatus === "running"
+              {calibrationArmed ? tr("Preview only · Save the floor corners and analyze again to update this map.", "กำลังแสดงผลเดิม · บันทึกมุมพื้นแล้ววิเคราะห์ใหม่เพื่ออัปเดตแผนผัง") : formationStatus === "off" ? tr("Set all 4 floor corners to start formation analysis.", "ตั้งค่าพื้นเวที 4 มุมเพื่อเริ่มวิเคราะห์ฟอร์เมชัน") : formationStatus === "loading" ? tr("Starting analysis… The video can keep playing.", "กำลังเริ่มงานวิเคราะห์… คลิปยังเล่นต่อได้") : formationStatus === "running"
                 ? formationStage === "downloading" ? tr("Preparing the video · Playback continues normally.", "กำลังเตรียมวิดีโอ · คลิปเล่นต่อได้ตามปกติ")
                 : formationStage === "extracting-frames" ? tr("Selecting sample frames · Playback continues normally.", "กำลังเลือกภาพตัวอย่างจากคลิป · คลิปเล่นต่อได้ตามปกติ")
                   : formationStage === "projecting-floor" ? tr("Mapping foot positions to the floor · Playback continues normally.", "กำลังแปลงตำแหน่งเท้าบนพื้นเวที · คลิปเล่นต่อได้ตามปกติ")

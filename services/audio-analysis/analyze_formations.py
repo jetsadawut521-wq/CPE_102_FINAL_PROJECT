@@ -10,8 +10,9 @@ from pathlib import Path
 
 YOLO_POSE_MODEL_URL = "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26s-pose.pt"
 MAX_DURATION = 900
-# Two-second spacing roughly halves CPU inference for typical practice clips.
-SAMPLE_FPS = 0.5
+# Slightly denser sampling helps keep dancer identities through overlaps while
+# keeping CPU cost below a full one-frame-per-second pass.
+SAMPLE_FPS = 0.75
 
 
 def set_stage(root, stage):
@@ -96,6 +97,20 @@ def point_inside_stage(x, y, corners):
     return all(value >= -1e-6 for value in crosses) or all(value <= 1e-6 for value in crosses)
 
 
+def is_duplicate_detection(left, right):
+    """Reject near-identical boxes without merging dancers at different depths."""
+    a_left, a_top, a_right, a_bottom = left["box"]
+    b_left, b_top, b_right, b_bottom = right["box"]
+    intersection = max(0.0, min(a_right, b_right) - max(a_left, b_left)) * max(
+        0.0, min(a_bottom, b_bottom) - max(a_top, b_top))
+    area_a = max(0.0, a_right - a_left) * max(0.0, a_bottom - a_top)
+    area_b = max(0.0, b_right - b_left) * max(0.0, b_bottom - b_top)
+    union = area_a + area_b - intersection
+    overlap = intersection / union if union > 0 else 0.0
+    anchor_distance = ((left["x"] - right["x"]) ** 2 + (left["y"] - right["y"]) ** 2) ** 0.5
+    return overlap >= 0.7 and anchor_distance <= 0.025
+
+
 def cached_model(filename, url):
     root = Path(os.environ.get("FORMATION_MODEL_CACHE", str(Path.home() / ".cache" / "muverse-audio" / "models")))
     root.mkdir(parents=True, exist_ok=True)
@@ -114,8 +129,8 @@ def detector_frames(video_id, root):
     command = [sys.executable, "-m", "yt_dlp", "--no-playlist", "--no-progress", "--no-warnings",
                "--ignore-config", *( ["--js-runtimes", "node"] if shutil.which("node") else [] ),
                "--socket-timeout", "15", "--retries", "1", "--extractor-retries", "1", "--fragment-retries", "1",
-               "--max-filesize", "150M", "--match-filter", f"duration > 0 & duration <= {MAX_DURATION} & !is_live",
-               "-f", "bestvideo[height<=360]+bestaudio/best[height<=360]/best",
+               "--max-filesize", "250M", "--match-filter", f"duration > 0 & duration <= {MAX_DURATION} & !is_live",
+               "-f", "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
                "-o", str(output), f"https://www.youtube.com/watch?v={video_id}"]
     subprocess.run(command, check=True, stdout=subprocess.DEVNULL, timeout=180)
     videos = [path for path in root.glob("clip.*") if path.suffix not in (".part", ".ytdl", ".download")]
@@ -129,7 +144,7 @@ def detector_frames(video_id, root):
     frames = root / "frames"
     frames.mkdir()
     subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-i", str(video), "-vf",
-                    f"fps={SAMPLE_FPS},scale=640:360:force_original_aspect_ratio=decrease", "-q:v", "5",
+                    f"fps={SAMPLE_FPS},scale=960:540:force_original_aspect_ratio=decrease", "-q:v", "4",
                     "-threads", "1", str(frames / "%06d.jpg")], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
     paths = sorted(frames.glob("*.jpg"))
     if not paths:
@@ -180,8 +195,8 @@ def collect_detections(paths, root, stage_corners):
         # one as a duplicate; a modestly lower confidence threshold helps with
         # partially occluded dancers. Stage-polygon filtering below still
         # rejects detections outside the calibrated performance area.
-        results = model.predict([str(path) for path in batch_paths], imgsz=640, batch=batch_size,
-                                conf=0.16, iou=0.7, max_det=24, device="cpu", verbose=False)
+        results = model.predict([str(path) for path in batch_paths], imgsz=960, batch=batch_size,
+                                conf=0.14, iou=0.78, max_det=32, device="cpu", verbose=False)
         for offset, result in enumerate(results):
             index = batch_start + offset
             # Ultralytics stores the decoded source frame in BGR order.
@@ -201,7 +216,10 @@ def collect_detections(paths, root, stage_corners):
                     if right <= left or bottom <= top:
                         continue
                     box_width, box_height = right - left, bottom - top
-                    if box_height < 0.07 or box_width < 0.018:
+                    # Dancers farther from the camera can be much smaller in
+                    # frame, especially when arranged in depth. Keep these
+                    # detections for the stage-bound and temporal filters below.
+                    if box_height < 0.04 or box_width < 0.012:
                         continue
                     confidence = keypoint_scores[detection_index] if keypoint_scores is not None else np.ones(len(pose))
                     # COCO keypoint order: hips 11/12, knees 13/14, ankles 15/16.
@@ -247,7 +265,12 @@ def collect_detections(paths, root, stage_corners):
                                        "score": float(score), "box": (left, top, right, bottom),
                                        "shape": box_width / max(0.01, box_height),
                                        "appearance": appearance.tolist()})
-            samples.append({"index": index, "time": index / SAMPLE_FPS, "points": candidates})
+            unique_candidates = []
+            for candidate in sorted(candidates, key=lambda item: item["score"], reverse=True):
+                if any(is_duplicate_detection(candidate, kept) for kept in unique_candidates):
+                    continue
+                unique_candidates.append(candidate)
+            samples.append({"index": index, "time": index / SAMPLE_FPS, "points": unique_candidates})
     return samples
 
 
@@ -355,11 +378,52 @@ def track_people(samples, target_count):
                 assignments.append({"id": track["id"], "point": {"x": track["x"], "y": track["y"]},
                                     "box": track["box"], "observed": False})
 
+        observed_ids = {item["id"] for item in assignments if item["observed"]}
         points = [{"x": track["x"], "y": track["y"], "fallback": track["fallback"], "color": track["id"] % 10,
-                   "track_id": track["id"]} for track in tracks]
+                   "track_id": track["id"], "observed": track["id"] in observed_ids} for track in tracks]
         tracked_samples.append({"index": sample["index"], "time": sample["time"],
                                 "points": points, "assignments": assignments})
     return tracked_samples
+
+
+def stabilize_tracks(samples):
+    """Bridge brief occlusions, then remove small position jitter per dancer."""
+    by_track = {}
+    for sample_index, sample in enumerate(samples):
+        for point in sample["points"]:
+            by_track.setdefault(point["track_id"], []).append((sample_index, point))
+
+    for sequence in by_track.values():
+        observed = [index for index, (_, point) in enumerate(sequence) if point.get("observed", True)]
+        for left_index, right_index in zip(observed, observed[1:]):
+            left_sample, left = sequence[left_index]
+            right_sample, right = sequence[right_index]
+            gap = samples[right_sample]["time"] - samples[left_sample]["time"]
+            if gap <= 0 or gap > 3.0:
+                continue
+            for sequence_index in range(left_index + 1, right_index):
+                sample_index, point = sequence[sequence_index]
+                if point.get("observed", True):
+                    continue
+                ratio = (samples[sample_index]["time"] - samples[left_sample]["time"]) / gap
+                point["x"] = left["x"] + (right["x"] - left["x"]) * ratio
+                point["y"] = left["y"] + (right["y"] - left["y"]) * ratio
+
+        # A short median filter damps detector jitter only while the dancer is
+        # staying in roughly the same spot; real formation changes stay sharp.
+        for sequence_index in range(1, len(sequence) - 1):
+            _, previous = sequence[sequence_index - 1]
+            _, current = sequence[sequence_index]
+            _, following = sequence[sequence_index + 1]
+            if not all(point.get("observed", True) for point in (previous, current, following)):
+                continue
+            positions = [(point["x"], point["y"]) for point in (previous, current, following)]
+            if max(((x - current["x"]) ** 2 + (y - current["y"]) ** 2) ** 0.5
+                   for x, y in (positions[0], positions[2])) > 0.08:
+                continue
+            current["x"] = sorted(position[0] for position in positions)[1]
+            current["y"] = sorted(position[1] for position in positions)[1]
+    return samples
 
 
 def build_timeline(samples):
@@ -426,10 +490,11 @@ def analyze(video_id, root, stage_corners):
     # Use the same floor-plane projection approach as GridStage: dancers' foot
     # locations are transformed using the calibrated four-corner quadrilateral.
     samples = project_samples(samples, transform, root)
+    samples = stabilize_tracks(samples)
     formations = build_timeline(samples)
     for formation in formations:
         formation.pop("sample_indexes", None)
-    return {"engine": "formation-v15", "formations": formations}
+    return {"engine": "formation-v18", "formations": formations}
 
 
 if __name__ == "__main__":
