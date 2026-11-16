@@ -594,6 +594,8 @@ h1,h2,h3,h4,.brand { font-family:var(--font-display); }
 .header-search form button { position:relative; display:grid; flex:none; place-items:center; width:36px; height:36px; opacity:1!important; }
 .header-search form button::after { content:""; display:block; width:13px; height:13px; border:2px solid #111; border-radius:50%; font-size:0; }
 .header-search form button::before { content:""; position:absolute; right:7px; bottom:7px; width:7px; height:2px; border-radius:2px; background:#111; transform:rotate(45deg); transform-origin:center; }
+.header-search form button::after,.practice-search-widget form button::after { transform:translateY(-4px); }
+.header-search form button::before,.practice-search-widget form button::before { bottom:11px; }
 .header-search ul { top:64px; border-radius:22px; padding:12px!important; }
 .header-search ul:empty { display:none; }
 @media(max-width:620px) {
