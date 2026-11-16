@@ -1168,3 +1168,39 @@ h1,h2,h3,h4,.brand { font-family:var(--font-display); }
   background:var(--lime)!important;
   color:#111!important;
 }
+
+/* Keep the add-to-playlist dialog readable in dark mode. */
+:root[data-theme="dark"] .add-playlist-dialog {
+  border-color:#424242!important;
+  background:#242424!important;
+  color:#f7f7f2!important;
+}
+:root[data-theme="dark"] .add-playlist-dialog h2,
+:root[data-theme="dark"] .add-playlist-dialog label { color:#f7f7f2!important; }
+:root[data-theme="dark"] .add-playlist-dialog p,
+:root[data-theme="dark"] .add-playlist-dialog small { color:#c4c4bd!important; }
+:root[data-theme="dark"] .add-playlist-dialog select,
+:root[data-theme="dark"] .add-playlist-dialog input {
+  border-color:#515151!important;
+  background:#181818!important;
+  color:#f7f7f2!important;
+  color-scheme:dark;
+}
+:root[data-theme="dark"] .add-playlist-dialog input::placeholder { color:#a5a5a0!important; }
+:root[data-theme="dark"] .add-playlist-dialog option { background:#242424; color:#f7f7f2; }
+:root[data-theme="dark"] .add-playlist-dialog > div:last-child > button {
+  border-color:#515151!important;
+  background:#343434!important;
+  color:#f7f7f2!important;
+}
+:root[data-theme="dark"] .add-playlist-dialog > div:last-child > button:last-child:not(:disabled) {
+  border-color:var(--lime)!important;
+  background:var(--lime)!important;
+  color:#111!important;
+}
+:root[data-theme="dark"] .add-playlist-dialog > div:last-child > button:disabled {
+  border-color:#484848!important;
+  background:#383838!important;
+  color:#a5a5a0!important;
+  opacity:1!important;
+}
