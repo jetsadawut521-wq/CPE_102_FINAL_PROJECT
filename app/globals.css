@@ -617,7 +617,7 @@ h1,h2,h3,h4,.brand { font-family:var(--font-display); }
 .header-search form:focus-within { box-shadow:0 0 0 3px #b6d967; }
 .header-search form input:focus-visible { outline:none!important; outline-offset:0; }
 /* Account page: login layout and restored fifth navigation item. */
-.bottom-nav { grid-template-columns:repeat(5,minmax(0,1fr)); width:min(620px,calc(100vw - 32px)); }
+.bottom-nav { grid-template-columns:repeat(4,minmax(0,1fr)); width:min(500px,calc(100vw - 32px)); }
 .account-settings { display:grid; width:58px; height:58px; flex:none; place-items:center; border:0; border-radius:50%; background:#efefeb; color:#111; font-size:27px; }
 .account-page { display:grid; grid-template-columns:minmax(0,1.05fr) minmax(390px,.95fr); align-items:center; gap:clamp(40px,8vw,140px); min-height:calc(100vh - 220px); padding:18px 12px 40px; }
 .account-art { position:relative; display:grid; min-height:clamp(480px,62vw,760px); place-items:center; overflow:hidden; border-radius:38px; background:#fff9e9; }

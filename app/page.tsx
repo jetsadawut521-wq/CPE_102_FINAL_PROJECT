@@ -15,6 +15,8 @@ import { classifyVideo } from "@/lib/search-category";
 import { readSavedFormations, readSavedHighlights } from "@/lib/analysis-storage";
 import { DEFAULT_LIKED_COLOR, DEFAULT_PLAYLIST_COLOR, DEFAULT_PLAYLIST_ICON, isLikedId, usePlaylists, type PlayMode, type Playlist } from "@/lib/playlist";
 import type { VideoItem } from "@/lib/youtube";
+import { useAccount } from "@/lib/use-account";
+import ProfileRow from "@/components/profile-row";
 
 const MODE_KEY = "muverse:playmode";
 const PLAYLIST_COLORS = ["#ff7738", "#c9f45b", "#b894ff", "#45d5ee", "#ff5a9d", "#4d8dff", "#ffd84d", "#63dba0"];
@@ -97,6 +99,7 @@ interface NavEntry {
 
 export default function Page() {
   const pl = usePlaylists();
+  const account = useAccount({ requireLogin: true });
   const [current, setCurrent] = useState<VideoItem | null>(null);
   const [activeView, setActiveView] = useState<AppView>("home");
   const [practiceSearchMode, setPracticeSearchMode] = useState(false);
@@ -538,7 +541,8 @@ export default function Page() {
                 <button className="settings-row settings-language-trigger" type="button" aria-expanded={languageOpen} onClick={() => setLanguageOpen((open) => !open)}><span className="settings-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h11M9.5 3v2m2 0c-.7 4-3.5 7-7 8m1-5c1.2 2.5 3.5 4.5 6.5 5.5M14 19l4-10 4 10m-6.5-3h5"/></svg>{tr("Display language", "ภาษาที่แสดง")}</span><span className="settings-current">{displayLanguage}<b aria-hidden="true">›</b></span></button>
                 {languageOpen && <div className="settings-language-options"><button type="button" lang="en" onClick={() => { setDisplayLanguage("English"); setLanguageOpen(false); }}>English {displayLanguage === "English" && <span>✓</span>}</button><button type="button" lang="th" onClick={() => { setDisplayLanguage("ไทย"); setLanguageOpen(false); }}>ไทย {displayLanguage === "ไทย" && <span>✓</span>}</button></div>}
               </div>
-              <button className="settings-login" type="button" onClick={() => { navigate("account"); setSettingsOpen(false); setLanguageOpen(false); }}>{tr("Log in", "เข้าสู่ระบบ")}</button>
+              {account.user && <ProfileRow user={account.user} tr={tr} onSaved={account.updateProfile} />}
+              <button className="settings-login" type="button" onClick={() => { setSettingsOpen(false); setLanguageOpen(false); if (account.user) { account.logout(); } else { window.location.href = "/login"; } }}>{account.user ? tr("Log out", "ออกจากระบบ") : tr("Log in", "เข้าสู่ระบบ")}</button>
             </section>}
           </div>
         </div>
@@ -919,7 +923,7 @@ export default function Page() {
         </div>
       )}
       <nav className="bottom-nav" aria-label={tr("Main navigation", "เมนูหลัก")}>
-        {([["home", tr("Home", "หน้าหลัก")], ["random", tr("Random Dance", "สุ่มเต้น")], ["practice", tr("Practice", "ฝึกเต้น")], ["playlists", tr("Playlists", "เพลย์ลิสต์")], ["account", tr("Account", "บัญชี")]] as const).map(([view, label]) => <button type="button" key={view} className={activeView === view ? "active" : ""} onClick={() => navigate(view)} aria-current={activeView === view ? "page" : undefined}><span aria-hidden="true"><NavIcon name={view} /></span><small>{label}</small></button>)}
+        {([["home", tr("Home", "หน้าหลัก")], ["random", tr("Random Dance", "สุ่มเต้น")], ["practice", tr("Practice", "ฝึกเต้น")], ["playlists", tr("Playlists", "เพลย์ลิสต์")]] as const).map(([view, label]) => <button type="button" key={view} className={activeView === view ? "active" : ""} onClick={() => navigate(view)} aria-current={activeView === view ? "page" : undefined}><span aria-hidden="true"><NavIcon name={view} /></span><small>{label}</small></button>)}
       </nav>
     </main>
   );
