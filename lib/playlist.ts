@@ -1,8 +1,11 @@
 // lib/playlist.ts
-// จัดการ playlist ของผู้ใช้ เก็บใน localStorage ของเบราว์เซอร์ (ยังไม่มีระบบบัญชี/ฐานข้อมูล)
-// ถ้าภายหลังมี backend แค่เปลี่ยนที่เก็บข้อมูลในไฟล์นี้ ส่วน UI ไม่ต้องแก้
+// จัดการ playlist ของผู้ใช้
+//   - ล็อกอินอยู่  → โหลด/บันทึกกับเซิร์ฟเวอร์ (/api/me/data/playlists) ผูกกับบัญชี
+//   - ยังไม่ล็อกอิน → เก็บใน localStorage ของเบราว์เซอร์เหมือนเดิม
+// ส่วนที่เพิ่มจากเวอร์ชันของเพื่อน: useRef ใน import, ค่าคงที่ API_URL/SAVE_DELAY_MS, ฟังก์ชัน normalize,
+// และ useEffect สองตัว (โหลด/บันทึก) ที่เหลือเหมือนเดิมทุกบรรทัด
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { VideoItem } from "./youtube";
 
 export interface Playlist {
@@ -21,6 +24,8 @@ export const DEFAULT_PLAYLIST_COLOR = "#ff7738";
 export const DEFAULT_LIKED_COLOR = "#c9f45b";
 
 const STORAGE_KEY = "muverse:playlists";
+const API_URL = "/api/me/data/playlists";
+const SAVE_DELAY_MS = 600; // รอให้หยุดแก้ครู่หนึ่งค่อยส่ง ไม่ยิงเซิร์ฟเวอร์ทุกการคลิก
 
 /** วิธีเล่น: เรียงตามลำดับที่นำเข้า (วนซ้ำ) / สุ่ม (วนซ้ำ ไม่ซ้ำจนกว่าจะครบทุกเพลง) / วนซ้ำคลิปเดียว */
 export type PlayMode = "sequential" | "shuffle" | "single" | "random-dance";
@@ -49,38 +54,79 @@ function isPlaylist(p: unknown): p is Playlist {
   return !!o && typeof o.id === "string" && typeof o.name === "string" && Array.isArray(o.items);
 }
 
+/** แปลงข้อมูลดิบ (จาก localStorage หรือเซิร์ฟเวอร์) เป็นรายการ playlist ที่ใช้ได้ คืน null ถ้าไม่ใช่อาร์เรย์ */
+function normalize(parsed: unknown): Playlist[] | null {
+  if (!Array.isArray(parsed)) return null;
+  const all = parsed.filter(isPlaylist).map((p) => ({
+    ...p,
+    items: p.items.filter(isVideo),
+    ...(p.id === LIKED_ID
+      ? { color: p.color ?? DEFAULT_LIKED_COLOR }
+      : { icon: p.icon ?? DEFAULT_PLAYLIST_ICON, color: p.color ?? DEFAULT_PLAYLIST_COLOR }),
+  }));
+  // Keep the liked collection at the front and normalize its display name.
+  const liked = all.find((p) => p.id === LIKED_ID) ?? emptyLiked();
+  return [
+    { ...liked, name: "Liked clips", color: liked.color ?? DEFAULT_LIKED_COLOR, cover: liked.cover ?? randomCoverFrom(liked.items) },
+    ...all.filter((p) => p.id !== LIKED_ID),
+  ];
+}
+
 export function usePlaylists() {
   const [playlists, setPlaylists] = useState<Playlist[]>(() => [emptyLiked()]);
   const [loaded, setLoaded] = useState(false);
+  const remote = useRef(false); // true = ล็อกอินอยู่ ใช้เซิร์ฟเวอร์เป็นที่เก็บ
 
   // อ่านครั้งเดียวหลัง mount (ไม่อ่านตอน render เพื่อกัน hydration ไม่ตรงกับฝั่งเซิร์ฟเวอร์)
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed: unknown = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          const all = parsed.filter(isPlaylist).map((p) => ({
-            ...p,
-            items: p.items.filter(isVideo),
-            ...(p.id === LIKED_ID
-              ? { color: p.color ?? DEFAULT_LIKED_COLOR }
-              : { icon: p.icon ?? DEFAULT_PLAYLIST_ICON, color: p.color ?? DEFAULT_PLAYLIST_COLOR }),
-          }));
-          // Keep the liked collection at the front and normalize its display name.
-          const liked = all.find((p) => p.id === LIKED_ID) ?? emptyLiked();
-          setPlaylists([{ ...liked, name: "Liked clips", color: liked.color ?? DEFAULT_LIKED_COLOR, cover: liked.cover ?? randomCoverFrom(liked.items) }, ...all.filter((p) => p.id !== LIKED_ID)]);
-        }
+    let cancelled = false;
+    (async () => {
+      let local: Playlist[] | null = null;
+      try {
+        local = normalize(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "null"));
+      } catch {
+        /* ข้อมูลเสียหรือ localStorage ใช้ไม่ได้ → เริ่มจากว่าง */
       }
-    } catch {
-      /* ข้อมูลเสียหรือ localStorage ใช้ไม่ได้ → เริ่มจากว่าง */
-    }
-    setLoaded(true);
+      let next = local;
+      try {
+        const me = await fetch("/api/auth/me").then((r) => r.json());
+        if (me?.user) {
+          const res = await fetch(API_URL);
+          if (res.ok) {
+            const { value } = await res.json();
+            remote.current = true;
+            // ล็อกอินแล้วใช้ข้อมูลของบัญชีเท่านั้น บัญชีใหม่ (value = null) เริ่มจากว่าง
+            // ไม่ดึง playlist ที่ค้างใน localStorage ของเบราว์เซอร์มาให้ จะได้ไม่ปนข้ามบัญชี
+            next = normalize(value);
+          }
+        }
+      } catch {
+        /* เซิร์ฟเวอร์ล่ม/ออฟไลน์ → ใช้ของในเครื่องต่อไป */
+      }
+      if (cancelled) return;
+      if (next) setPlaylists(next);
+      setLoaded(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // บันทึกทุกครั้งที่เปลี่ยน (รอให้อ่านเสร็จก่อน ไม่งั้นจะเขียนทับของเดิมด้วยค่าว่าง)
   useEffect(() => {
     if (!loaded) return;
+    if (remote.current) {
+      const timer = window.setTimeout(() => {
+        fetch(API_URL, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ value: playlists }),
+        }).catch(() => {
+          /* ส่งไม่สำเร็จ (เน็ตหลุด/session หมดอายุ) ครั้งถัดไปที่แก้จะลองใหม่ */
+        });
+      }, SAVE_DELAY_MS);
+      return () => window.clearTimeout(timer);
+    }
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(playlists));
     } catch {
