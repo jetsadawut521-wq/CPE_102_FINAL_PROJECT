@@ -1,0 +1,5 @@
+# Audio-analysis dependencies; the optional formation worker installs YOLO separately.
+numpy==1.26.4
+scipy>=1.11,<2
+yt-dlp[default]==2026.10.26
+Pillow>=10,<13

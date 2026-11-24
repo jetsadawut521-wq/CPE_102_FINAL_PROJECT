@@ -1,0 +1,153 @@
+/* ระยะที่ขยาย iframe เกินเวทีด้านบน/ล่าง เพื่อซ่อนแถบชื่อคลิปของ YouTube
+   ถ้ายังเห็นชื่อคลิปโผล่ ให้เพิ่มเลข 56px / 14% */
+.yp-stage { --yp-pad: max(56px, 14%); position: relative; aspect-ratio: 16 / 9; background: #000; max-width: 960px; overflow: hidden; }
+.yp-frame { position: absolute; left: 0; right: 0; top: calc(-1 * var(--yp-pad)); height: calc(100% + 2 * var(--yp-pad)); }
+.yp-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.yp-stage.is-mirrored .yp-frame { transform: scaleX(-1); }
+.yp-tap { position: absolute; inset: 0; cursor: pointer; touch-action: manipulation; user-select: none; }
+.yp-stage.is-calibrating, .yp-stage.is-calibrating .yp-tap { cursor: default; }
+.yp-calibration-overlay { position: absolute; z-index: 4; inset: 0; pointer-events: none; }
+.yp-calibration-shape { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.yp-calibration-shape polygon { fill: rgb(236 72 153 / 14%); stroke: #ec4899; stroke-width: 0.55; vector-effect: non-scaling-stroke; }
+.yp-calibration-mark { position: absolute; display: grid; place-items: center; width: 2rem; height: 2rem; padding: 0;
+  transform: translate(-50%, -50%); border: 2px solid #fff; border-radius: 50%; background: #ec4899; color: #fff;
+  font-size: 0.9rem; font-weight: 700; box-shadow: 0 1px 8px #000; pointer-events: auto; touch-action: none; cursor: grab; }
+.yp-calibration-mark:active { cursor: grabbing; }
+.yp-root.is-fullscreen .yp-calibration-overlay { inset: 50% auto auto 50%; width: min(100%, 177.7778vh); aspect-ratio: 16 / 9; height: auto; transform: translate(-50%, -50%); }
+.yp-view-layout { display: block; max-width: 960px; }
+.yp-view-layout.has-formation { display: grid; grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr); gap: 0.85rem; align-items: center; }
+.yp-view-layout.has-formation .yp-stage { width: 100%; max-width: none; }
+.yp-formation-map { min-width: 0; display: grid; gap: 0.65rem; padding: 0.75rem; border: 1px solid rgb(130 145 180 / 0.45);
+  border-radius: 0.65rem; background: #171b29; color: #f5f6fa; }
+.yp-formation-map__stage { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 0.4rem; background-color: #252a3e;
+  background-image: linear-gradient(rgb(255 255 255 / 0.05) 1px, transparent 1px), linear-gradient(90deg, rgb(255 255 255 / 0.05) 1px, transparent 1px);
+  background-size: 12.5% 12.5%; }
+.yp-formation-map__stage.is-editing { cursor: crosshair; touch-action: none; }
+.yp-formation-map__dot { position: absolute; width: clamp(10px, 1.5vw, 16px); height: clamp(10px, 1.5vw, 16px); border: 2px solid #fff;
+  border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 10px rgb(0 0 0 / 0.7);
+  transition: left 1.1s cubic-bezier(0.2, 0.7, 0.2, 1), top 1.1s cubic-bezier(0.2, 0.7, 0.2, 1); }
+.yp-formation-map__stage.is-editing .yp-formation-map__dot { cursor: grab; transition: none; touch-action: none; }
+.yp-formation-map__stage.is-editing .yp-formation-map__dot:active { cursor: grabbing; }
+.yp-formation-map__name { position: absolute; left: 50%; top: calc(100% + 3px); transform: translateX(-50%); max-width: 8rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0.05rem 0.25rem; border-radius: 0.2rem;
+  background: rgb(0 0 0 / 0.62); color: #fff; font-size: 0.68rem; line-height: 1.2; }
+.yp-formation-editor { display: grid; gap: 0.5rem; }
+.yp-formation-editor label { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+.yp-formation-editor select { max-width: 100%; }
+.yp-formation-editor__people { display: grid; gap: 0.35rem; max-height: 11rem; overflow: auto; }
+.yp-formation-editor__people label { display: grid; grid-template-columns: auto minmax(4rem, 1fr) auto; }
+.yp-formation-editor__people input { min-width: 0; width: 100%; }
+.yp-formation-editor__people small { font-size: 0.72rem; opacity: 0.72; }
+.yp-formation-map__empty { position: absolute; inset: 0; display: grid; place-items: center; font-size: 2rem; opacity: 0.45; }
+.yp-formation-map small { line-height: 1.35; opacity: 0.82; }
+.yp-formation-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; max-width: 960px; margin-top: 0.55rem; }
+.yp-formation-tools small { opacity: 0.78; }
+.yp-formation-tools .yp-formation-error { flex-basis: 100%; color: #b42318; opacity: 1; }
+.yp-flash { position: absolute; top: 50%; transform: translateY(-50%); padding: 0.5rem 0.9rem;
+  border-radius: 999px; background: rgb(0 0 0 / 0.65); color: #fff; pointer-events: none; }
+.yp-flash--left { left: 10%; }
+.yp-flash--right { right: 10%; }
+.yp-flash--center { left: 50%; transform: translate(-50%, -50%); }
+.yp-focus-countdown { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center;
+  color: #fff; font-size: clamp(4rem, 14vw, 8rem); font-weight: 800; line-height: 1;
+  text-shadow: 0 3px 18px rgb(0 0 0 / 0.9); pointer-events: none; }
+.yp-msg { position: absolute; left: 0; right: 0; bottom: 0; padding: 0.5rem 0.75rem; background: rgb(0 0 0 / 0.7); color: #fff; }
+.yp-controls { max-width: 960px; display: grid; gap: 0.5rem; margin-top: 0.5rem; }
+.yp-seek { display: grid; grid-template-columns: auto 1fr auto; gap: 0.5rem; align-items: center; }
+.yp-seek input { width: 100%; }
+.yp-row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+
+/* ปุ่มเต็มจอบนจอวิดีโอ: จางๆ ปกติ และขึ้นเมื่อเมาส์อยู่บนจอ */
+.yp-fs { position: absolute; right: 0.6rem; bottom: 0.6rem; z-index: 2; display: grid; place-items: center;
+  width: 2.5rem; height: 2.5rem; padding: 0; border: 0; border-radius: 0.5rem; cursor: pointer;
+  background: rgb(0 0 0 / 0.35); color: #fff; opacity: 0; transition: opacity 0.2s, background 0.2s; }
+.yp-stage:hover .yp-fs, .yp-fs:focus-visible { opacity: 0.55; }
+.yp-stage .yp-fs:hover { opacity: 1; background: rgb(0 0 0 / 0.65); }
+.yp-fs:disabled { display: none; }
+@media (hover: none) { .yp-fs { opacity: 0.55; } } /* จอสัมผัสไม่มี hover จึงแสดงจางๆ ตลอด */
+.yp-note { font-size: 0.85rem; opacity: 0.8; }
+
+@media (max-width: 700px) {
+  .yp-view-layout.has-formation { grid-template-columns: 1fr; }
+  .yp-formation-map { grid-template-columns: 1fr 1fr; align-items: center; }
+  .yp-formation-map strong, .yp-formation-map small { grid-column: 1 / -1; }
+  .yp-root.is-fullscreen .yp-view-layout.has-formation { grid-template-columns: minmax(0, 1.5fr) minmax(180px, 1fr); gap: 0.5rem; padding: 0.5rem 0.5rem 5rem; }
+  .yp-root.is-fullscreen .yp-formation-map { grid-template-columns: 1fr; }
+}
+
+/* โหมดเต็มจอ: วิดีโอเต็มพื้นที่ แถบกรอคลิปลอยทับด้านล่าง ปุ่ม/เมนูอยู่มุมขวาบน */
+.yp-root.is-fullscreen { position: relative; width: 100vw; height: 100vh; background: #000; color: #fff; }
+.yp-root.is-fullscreen .yp-stage { position: absolute; inset: 0; aspect-ratio: auto; max-width: none; }
+.yp-root.is-fullscreen .yp-view-layout.has-formation { position: absolute; inset: 0; max-width: none; display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr); gap: 1rem; align-items: center; padding: 1rem 1rem 5rem; }
+.yp-root.is-fullscreen .yp-view-layout.has-formation.practice-panel-closed { grid-template-columns: minmax(0, 1fr); }
+.yp-root.is-fullscreen .yp-view-layout.has-formation.practice-panel-closed .yp-formation-map { display: none; }
+.yp-root.is-fullscreen .yp-view-layout.has-formation .yp-stage { position: relative; inset: auto; aspect-ratio: 16 / 9; max-width: none; }
+.yp-root.is-fullscreen .yp-formation-map { width: 100%; max-height: calc(100vh - 7rem); overflow-y: auto; align-content: start; }
+.yp-fullscreen-highlights { display: grid; gap: 0.7rem; padding-top: 0.85rem; border-top: 1px solid rgb(0 0 0 / 0.14); color: #171717; }
+.yp-fullscreen-highlights .yp-highlight-heading { margin-top: 0; }
+.yp-fullscreen-highlights .yp-highlight-heading strong { color: #666660; }
+.yp-fullscreen-highlights .yp-hls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.45rem; }
+.yp-fullscreen-highlights .yp-hl-chip { width: 100%; min-width: 0; text-align: left; white-space: normal; }
+.yp-fullscreen-waveform { height: 3.4rem; display: flex; align-items: center; justify-content: space-around; gap: 3px; overflow: hidden;
+  padding: 0 0.55rem; border-radius: 0.55rem; background: #171717; }
+.yp-fullscreen-waveform span { flex: 1 1 3px; min-width: 2px; max-width: 4px; min-height: 5px; border-radius: 3px; background: #c9c9c9; }
+.yp-fullscreen-waveform span.is-auto { background: #ff7738; }
+.yp-fullscreen-waveform span.is-selected { background: #c6ff22; }
+.yp-fullscreen-highlights .yp-waveform-legend { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; color: #777; font-size: 0.8rem; }
+.yp-fullscreen-highlights .yp-waveform-legend span { display: flex; align-items: center; gap: 0.4rem; }
+.yp-fullscreen-highlights .yp-waveform-legend i { width: 1rem; height: 0.4rem; border-radius: 999px; background: #ff7738; }
+.yp-fullscreen-highlights .yp-waveform-legend i.is-selected { background: #c6ff22; }
+.yp-fullscreen-highlights .yp-ab-range { display: grid; gap: 0.45rem; }
+.yp-fullscreen-highlights .yp-ab-range > small, .yp-fullscreen-highlights .yp-ab-labels { color: #666; font-size: 0.78rem; }
+.yp-fullscreen-highlights .yp-ab-values { display: grid; grid-template-columns: 1fr 1fr; gap: 0.55rem; }
+.yp-fullscreen-highlights .yp-ab-values button { min-height: 2.8rem; border: 0; border-radius: 999px; background: #fff; font-size: 1rem; font-weight: 700; }
+.yp-fullscreen-highlights .yp-ab-labels { display: flex; justify-content: space-between; font-weight: 700; }
+.yp-fullscreen-highlights .yp-highlight-editor__panel { box-sizing: border-box; width: 100%; }
+
+.yp-root.is-fullscreen .yp-controls { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; max-width: none; margin: 0;
+  padding: 2.5rem 1rem 0.75rem; background: linear-gradient(transparent, rgb(0 0 0 / 0.7)); transition: opacity 0.4s; }
+.yp-root.is-fullscreen .yp-fs { top: 0.75rem; bottom: auto; right: 0.75rem; opacity: 0.7; transition: opacity 0.4s, background 0.2s; }
+.yp-root.is-fullscreen .yp-fs:hover { opacity: 1; }
+
+.yp-panel-toggle { position:absolute; top:0.75rem; right:7rem; z-index:4; display:grid; place-items:center; width:2.5rem; height:2.5rem; padding:0; border:0; border-radius:0.65rem; background:rgb(0 0 0 / .45); color:#fff; cursor:pointer; opacity:.78; transition:opacity .2s,background .2s; }
+.yp-panel-toggle:hover { opacity:1; background:rgb(0 0 0 / .72); }
+
+.yp-more { position: absolute; top: 0.75rem; right: 4rem; z-index: 2; display: grid; place-items: center;
+  width: 2.5rem; height: 2.5rem; padding: 0; border: 0; border-radius: 0.5rem; cursor: pointer;
+  background: rgb(0 0 0 / 0.35); color: #fff; opacity: 0.7; transition: opacity 0.4s, background 0.2s; }
+.yp-more:hover { opacity: 1; background: rgb(0 0 0 / 0.65); }
+.yp-menu { position: absolute; top: 3.9rem; right: 4rem; z-index: 4; display: grid; gap: 0.75rem; padding: 0.9rem 1rem;
+  min-width: 14rem; border-radius: 0.6rem; background: rgb(20 20 20 / 0.92); color: #fff; }
+.yp-menu label { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; }
+
+/* เต็มจอ + ไม่ขยับเมาส์ → ทุกอย่างเฟดหาย และซ่อนเคอร์เซอร์ */
+.yp-root.is-fullscreen.is-idle { cursor: none; }
+.yp-root.is-fullscreen.is-idle .yp-tap { cursor: none; }
+.yp-root.is-fullscreen.is-idle .yp-controls,
+.yp-root.is-fullscreen.is-idle .yp-fs,
+.yp-root.is-fullscreen.is-idle .yp-more,
+.yp-root.is-fullscreen.is-idle .yp-panel-toggle,
+.yp-root.is-fullscreen.is-idle .yp-menu { opacity: 0; pointer-events: none; }
+
+/* ท่อนยอดนิยมบนแถบกรอ */
+.yp-track { position: relative; display: flex; align-items: center; min-width: 0; }
+.yp-track input { position: relative; }
+/* เลนซ้อนทับแถบกรอ: เว้นซ้าย/ขวาครึ่งหนึ่งของปุ่มเลื่อน (~8px) ให้ตำแหน่งตรงกับตัวเลื่อนจริง */
+.yp-hl-lane { position: absolute; left: 8px; right: 8px; top: 0; bottom: 0; pointer-events: none; }
+.yp-hl { position: absolute; top: 50%; height: 8px; transform: translateY(-50%); border-radius: 4px; background: rgb(255 64 129 / 0.35); }
+.yp-hl.is-high { background: rgb(255 64 129 / 0.65); }
+.yp-hl.is-active { background: rgb(255 64 129 / 0.95); height: 10px; }
+.yp-hls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; }
+.yp-hl-chip[aria-pressed="true"] { font-weight: 700; outline: 2px solid rgb(255 64 129); outline-offset: 1px; }
+.yp-hl-loop { font-size: 0.9rem; }
+.yp-hl-evidence { flex-basis: 100%; opacity: 0.85; }
+.yp-highlight-editor { display: grid; justify-items: start; gap: 0.45rem; }
+.yp-highlight-editor__panel { display: grid; gap: 0.6rem; width: min(100%, 960px); padding: 0.75rem; border: 1px solid #cbd5e1; border-radius: 0.5rem; background: #f8fafc; }
+.yp-highlight-editor__row { display: grid; grid-template-columns: minmax(8rem, 1.5fr) repeat(2, minmax(7rem, 1fr)) auto; align-items: end; gap: 0.5rem; }
+.yp-highlight-editor__row label { display: grid; gap: 0.2rem; font-size: 0.82rem; }
+.yp-highlight-editor__row input { box-sizing: border-box; min-width: 0; width: 100%; }
+.yp-highlight-editor__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.yp-highlight-editor__actions small { flex-basis: 100%; color: #b42318; }
+@media (max-width: 600px) { .yp-highlight-editor__row { grid-template-columns: 1fr 1fr; } }
